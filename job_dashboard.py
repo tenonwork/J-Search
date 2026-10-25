@@ -1,5 +1,6 @@
 import os
 import webbrowser
+import re
 
 # 1. Mock Data: This simulates what your scraper will eventually pull
 mock_scraped_jobs = [
@@ -34,53 +35,52 @@ def score_job(job):
     matches_found = []
     red_flags_found = []
     
-    # 1. High Value - AI Native & Autonomy (+10 points each)
-    # These match your pro-AI stance and self-directed building capabilities
-    high_value_keywords = [
-        "founding engineer", "sole developer", "mcp", "model context protocol", 
-        "ai agent", "agentic", "ai tooling", "llm infrastructure", "mvp", "greenfield"
+    # 1. Your Elite Core Stack (+8 points each)
+    core_skills = [
+        "postgresql", "supabase", "react native", "electron", 
+        "typescript", "react", "postgres", "expo", "fullstack", "full-stack", "backend"
     ]
     
-    # 2. Functional Full-Stack Stack (+6 points each)
-    core_stack = [
-        "postgresql", "supabase", "react native", "electron", "typescript", 
-        "react", "postgres", "expo", "fullstack", "full-stack", "backend"
+    # 2. Emerging & AI Stack (+5 points each)
+    ai_and_infra = [
+        "mcp", "model context protocol", "llm", "ai agent", 
+        "claude", "sqlite", "data science", "python"
     ]
     
-    # 3. Contextual Verticals (+5 points each)
-    # Target spaces that match what you built for the retail system
-    target_verticals = [
-        "logistics", "supply chain", "pos", "point of sale", "retail tech", 
-        "wholesale", "remote", "hybrid", "mombasa", "kisumu", "east africa"
+    # 3. Location & Level Preferences (+5 points each)
+    good_matches = ["nairobi", "remote", "hybrid", "mid-level", "mid level", "contract", "point of sale"]
+    
+    # SPECIAL EXCEPTION: True "POS" check (Only matches isolated "pos" word)
+    if re.search(r'\bpos\b', text):
+        score += 5
+        matches_found.append("pos (system)")
+    
+    # 4. Total dealbreakers (-30 points each) - Increased penalty to tank Senior roles completely
+    dealbreakers = [
+        "senior", "lead", "staff", "architect", "manager", 
+        "10+ years", "8+ years", "phd", "clearance required"
     ]
     
-    # 4. Corporate Filtering Red Flags (-15 points each)
-    # Things that indicate corporate bureaucracy or anti-AI sentiment
-    corporate_barriers = [
-        "enterprise architecture", "agile scrum master", "5+ years corporate", 
-        "10+ years corporate", "legacy migration", "manager of engineers",
-        "phd required", "strict corporate", "no generative ai"
-    ]
-    
-    # --- CALIBRATION ENGINE ---
-    for word in high_value_keywords:
-        if word in text:
-            score += 10
+    # --- BOUNDED WORD SCORING ENGINE ---
+    for word in core_skills:
+        # \b ensures the keyword is matching a whole, independent word
+        if re.search(r'\b' + re.escape(word) + r'\b', text):
+            score += 8
             matches_found.append(word)
             
-    for word in core_stack:
-        if word in text:
-            score += 6
-            matches_found.append(word)
-            
-    for word in target_verticals:
-        if word in text:
+    for word in ai_and_infra:
+        if re.search(r'\b' + re.escape(word) + r'\b', text):
             score += 5
             matches_found.append(word)
             
-    for word in corporate_barriers:
-        if word in text:
-            score -= 15
+    for word in good_matches:
+        if re.search(r'\b' + re.escape(word) + r'\b', text):
+            score += 5
+            matches_found.append(word)
+            
+    for word in dealbreakers:
+        if re.search(r'\b' + re.escape(word) + r'\b', text):
+            score -= 30  # Sinks the score completely
             red_flags_found.append(word)
             
     return score, matches_found, red_flags_found
