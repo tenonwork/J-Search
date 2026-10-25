@@ -121,6 +121,7 @@ def build_dashboard(jobs):
     
     # Process each job and add it to the HTML layout
         # Process each job/lead and add it to the HTML layout
+    # Process each job/lead and add it to the HTML layout
     for job in jobs:
         score, goods, bads = score_job(job)
         
@@ -128,11 +129,20 @@ def build_dashboard(jobs):
         if len(bads) > 0:
             continue
             
-        # 2. SCORE GATEKEEPER: Keeps highly targeted entities
-        # Note: If local merchant descriptions are short, they might score lower than verbose job ads.
-        # If your local dashboard opens blank, temporarily lower this threshold to 0 or 5 to view all entries.
-        if score <= 5:
+        # 2. SMART GATEKEEPER: 
+        # If it's a traditional job posting, keep the strict 10-point limit.
+        # If it's a local business audit lead, allow it through so you can see the targets!
+        is_local_lead = "Local" in job.get('location', '')
+        
+        if not is_local_lead and score <= 10:
             continue
+            
+        # Determine color layout based on score strength
+        if is_local_lead:
+            score_color = "#2563eb" # Clean blue theme for local outreach leads
+        else:
+            score_color = "#16a34a" if score >= 15 else "#ea580c" if score > 5 else "#dc2626"
+
             
         # Determine color layout based on score strength
         score_color = "#16a34a" if score >= 15 else "#ea580c" if score > 5 else "#dc2626"
