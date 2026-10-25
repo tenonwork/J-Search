@@ -3,26 +3,31 @@ import json
 from job_dashboard import build_dashboard
 
 def get_local_merchants(region="Kenya"):
-    # Overpass API endpoint for OpenStreetMap data
-    url = "https://overpass-api.de"
+    url = "https://overpass-api.de/api/interpreter"
     
     print(f"Connecting to OpenStreetMap Overpass API for {region}...")
     
-    # This query hunts for commercial shops, wholesalers, and retail distributors
-    # [timeout:25] ensures the network query drops cleanly if the server lags
-    query = f"""
-    [out:json][timeout:25];
+    query = """[out:json][timeout:30];
     area["ISO3166-1"="KE"]->.searchArea;
     (
-      nwr["shop"="wholesale"](area.searchArea);
-      nwr["shop"="distributor"](area.searchArea);
-      nwr["commercial"="wholesale"](area.searchArea);
+      nwr["shop"~"wholesale|distributor|warehouse"](area.searchArea);
+      nwr["commercial"~"wholesale|logistics"](area.searchArea);
     );
-    out tags;
-    """
+    out tags;"""
+    
+    # 1. Supply descriptive headers to bypass the 406 content block rules
+    headers = {
+        "User-Agent": "TenonworkOperationalAuditPipeline/1.0 (contact: swainaina551@gmail.com)",
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
+    }
+    
+    # 2. Package the query parameter payload explicitly
+    payload = {"data": query}
     
     try:
-        response = requests.post(url, data={"data": query}, timeout=30)
+        # Utilizing standard POST requests with safe timeout controls
+        response = requests.post(url, data=payload, headers=headers, timeout=40)
         
         if response.status_code == 200:
             raw_data = response.json()
@@ -35,18 +40,16 @@ def get_local_merchants(region="Kenya"):
                 tags = item.get('tags', {})
                 name = tags.get('name', 'Unbranded Local Merchant')
                 
-                # Extract location tags cleanly
-                city = tags.get('addr:city', '')
-                suburb = tags.get('addr:suburb', '')
-                location_str = f"{suburb}, {city}".strip(", ") if (suburb or city) else "East Africa Regional Hub"
+                # Check for standard location details
+                city = tags.get('addr:city', tags.get('is_in:city', ''))
+                suburb = tags.get('addr:suburb', tags.get('addr:neighborhood', ''))
+                location_str = f"{suburb}, {city}".strip(", ") if (suburb or city) else "East Africa Regional Center"
                 
-                # Construct a clean text description for your scoring engine to analyze
-                description = f"Local retail and wholesale merchant operation. Tags: {', '.join(tags.keys())}. "
-                if 'operator' in tags: description += f"Operated by {tags['operator']}. "
-                if 'description' in tags: description += f"{tags['description']}"
+                description = f"Operational merchant node. Type-tagging: {', '.join(tags.keys())}. "
+                if 'operator' in tags: description += f"Managed by {tags['operator']}. "
                 
                 formatted_business = {
-                    "title": f"B2B Operational Audit / Tech Infrastructure Needs",
+                    "title": "Local B2B Architecture Audit Opportunity",
                     "company": name,
                     "location": f"Local ({location_str})",
                     "url": tags.get('website', f"https://google.com{name.replace(' ', '+')}+Kenya"),
@@ -57,6 +60,8 @@ def get_local_merchants(region="Kenya"):
             return local_listings
         else:
             print(f"OSM Server rejected connection. Status code: {response.status_code}")
+            # If the main server is busy, we print the response text to debug
+            print(f"Server message snippet: {response.text[:200]}")
             return []
             
     except Exception as e:
@@ -64,12 +69,10 @@ def get_local_merchants(region="Kenya"):
         return []
 
 if __name__ == "__main__":
-    # Fetch real merchant locations across Kenya
     merchant_leads = get_local_merchants()
     
     if merchant_leads:
         print("Processing local business profiles through your custom scoring engine...")
-        # Direct integration back into your unified UI system!
         build_dashboard(merchant_leads)
     else:
-        print("No merchant profiles found to display.")
+        print("No merchant profiles found to display. Try running again.")
