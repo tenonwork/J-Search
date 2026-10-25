@@ -1,0 +1,71 @@
+
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>My Job Triage Dashboard</title>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f8; margin: 0; padding: 40px; }
+            .container { max-width: 900px; margin: auto; }
+            h1 { color: #1e293b; }
+            .card { background: white; padding: 20px; margin-bottom: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); display: flex; justify-content: space-between; align-items: center; }
+            .info { flex-grow: 1; }
+            .title { font-size: 18px; font-weight: bold; color: #0f172a; margin: 0 0 5px 0; }
+            .company { color: #64748b; font-size: 14px; margin-bottom: 10px; }
+            .badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; margin-right: 5px; }
+            .badge-good { background: #dcfce7; color: #15803d; }
+            .badge-bad { background: #fee2e2; color: #b91c1c; }
+            .score-box { text-align: center; margin-left: 20px; min-width: 80px; }
+            .score { font-size: 24px; font-weight: bold; }
+            .btn { display: inline-block; background: #2563eb; color: white; text-decoration: none; padding: 10px 16px; border-radius: 6px; font-weight: 500; margin-top: 10px; }
+            .btn:hover { background: #1d4ed8; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🎯 Job Match Dashboard</h1>
+            <p>Review matches, click to open, and let your browser extension autofill the application safely.</p>
+    
+            <div class="card">
+                <div class="info">
+                    <div class="title">Junior Python Developer</div>
+                    <div class="company">TechStart Inc. • Remote (US)</div>
+                    <div><span class="badge badge-good">python</span><span class="badge badge-good">sql</span><span class="badge badge-good">git</span><span class="badge badge-good">junior</span><span class="badge badge-bad">senior</span></div>
+                    <a href="https://indeed.com" target="_blank" class="btn">Review & Apply →</a>
+                </div>
+                <div class="score-box">
+                    <div style="color: #16a34a;" class="score">10</div>
+                    <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+                </div>
+            </div>
+        
+            <div class="card">
+                <div class="info">
+                    <div class="title">Senior Backend Architect</div>
+                    <div class="company">MegaCorp • Onsite - New York</div>
+                    <div><span class="badge badge-good">python</span><span class="badge badge-bad">senior</span><span class="badge badge-bad">lead</span><span class="badge badge-bad">10+ years</span></div>
+                    <a href="https://indeed.com" target="_blank" class="btn">Review & Apply →</a>
+                </div>
+                <div class="score-box">
+                    <div style="color: #dc2626;" class="score">-25</div>
+                    <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+                </div>
+            </div>
+        
+            <div class="card">
+                <div class="info">
+                    <div class="title">Software Engineer Intern (Python)</div>
+                    <div class="company">DataFlow LLC • Remote</div>
+                    <div><span class="badge badge-good">python</span><span class="badge badge-good">django</span><span class="badge badge-good">intern</span></div>
+                    <a href="https://indeed.com" target="_blank" class="btn">Review & Apply →</a>
+                </div>
+                <div class="score-box">
+                    <div style="color: #16a34a;" class="score">15</div>
+                    <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+                </div>
+            </div>
+        
+        </div>
+    </body>
+    </html>
+    
