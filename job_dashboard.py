@@ -29,49 +29,63 @@ mock_scraped_jobs = [
 # 2. The Smart Filter Engine
 def score_job(job):
     score = 0
-    # We combine title and description to scan everything at once
     text = (job['title'] + " " + job['desc']).lower()
     
     matches_found = []
     red_flags_found = []
     
-    # --- EDIT THESE DICTIONARIES TO MATCH YOUR PROFILE ---
+    # 1. High Value - AI Native & Autonomy (+10 points each)
+    # These match your pro-AI stance and self-directed building capabilities
+    high_value_keywords = [
+        "founding engineer", "sole developer", "mcp", "model context protocol", 
+        "ai agent", "agentic", "ai tooling", "llm infrastructure", "mvp", "greenfield"
+    ]
     
-    # 1. Technologies you KNOW well (+7 points each)
-    core_skills = ["python", "sql", "javascript", "html", "css"]
+    # 2. Functional Full-Stack Stack (+6 points each)
+    core_stack = [
+        "postgresql", "supabase", "react native", "electron", "typescript", 
+        "react", "postgres", "expo", "fullstack", "full-stack", "backend"
+    ]
     
-    # 2. Technologies you are LEARNING or open to (+3 points each)
-    secondary_skills = ["django", "flask", "git", "react", "rest api"]
+    # 3. Contextual Verticals (+5 points each)
+    # Target spaces that match what you built for the retail system
+    target_verticals = [
+        "logistics", "supply chain", "pos", "point of sale", "retail tech", 
+        "wholesale", "remote", "hybrid", "mombasa", "kisumu", "east africa"
+    ]
     
-    # 3. Role level indicators that match you (+5 points each)
-    good_roles = ["junior", "entry level", "associate", "intern", "remote"]
+    # 4. Corporate Filtering Red Flags (-15 points each)
+    # Things that indicate corporate bureaucracy or anti-AI sentiment
+    corporate_barriers = [
+        "enterprise architecture", "agile scrum master", "5+ years corporate", 
+        "10+ years corporate", "legacy migration", "manager of engineers",
+        "phd required", "strict corporate", "no generative ai"
+    ]
     
-    # 4. Total dealbreakers (-15 points each)
-    dealbreakers = ["senior", "lead", "staff", "architect", "manager", "10+", "5+ years", "onsite"]
-    
-    # --- SCORING ENGINE ---
-    
-    for word in core_skills:
+    # --- CALIBRATION ENGINE ---
+    for word in high_value_keywords:
         if word in text:
-            score += 7
+            score += 10
             matches_found.append(word)
             
-    for word in secondary_skills:
+    for word in core_stack:
         if word in text:
-            score += 3
+            score += 6
             matches_found.append(word)
             
-    for word in good_roles:
+    for word in target_verticals:
         if word in text:
             score += 5
             matches_found.append(word)
             
-    for word in dealbreakers:
+    for word in corporate_barriers:
         if word in text:
             score -= 15
             red_flags_found.append(word)
             
     return score, matches_found, red_flags_found
+
+
 
 
 # 3. The Dashboard Generator
