@@ -4,8 +4,7 @@ from bs4 import BeautifulSoup
 from job_dashboard import build_dashboard
 
 def get_local_merchants_ddg(search_term="wholesale distributor Kenya"):
-    # Target DuckDuckGo's lightweight, non-JS endpoint
-    url = "https://duckduckgo.com"
+    url = "https://html.duckduckgo.com/html/"
     
     print(f"Initializing search aggregation pipeline for: '{search_term}'...")
     
@@ -15,7 +14,6 @@ def get_local_merchants_ddg(search_term="wholesale distributor Kenya"):
     }
     
     try:
-        # Request raw HTML from the anonymous search node
         response = requests.post(url, data=payload, headers=headers, timeout=15)
         
         if response.status_code == 200:
@@ -23,12 +21,11 @@ def get_local_merchants_ddg(search_term="wholesale distributor Kenya"):
             
             # Target the standard web result blocks
             search_results = soup.find_all('div', class_='result')
-            print(f"Successfully processed search query! Found {len(search_results)} primary operational targets.")
-            
             local_listings = []
             
             for result in search_results:
-                title_element = result.find('a', class_='result__url')
+                # FIX: Target 'result__a' instead of 'result__url'
+                title_element = result.find('a', class_='result__a')
                 snippet_element = result.find('a', class_='result__snippet')
                 
                 if title_element and snippet_element:
@@ -36,9 +33,7 @@ def get_local_merchants_ddg(search_term="wholesale distributor Kenya"):
                     raw_url = title_element['href']
                     description = snippet_element.text.strip()
                     
-                    # Clean up the business name (remove trailing URLs if DDG appends them)
                     clean_name = re.sub(r'\s+http.*$', '', raw_name)
-                    # Limit length for clean dashboard cards
                     if len(clean_name) > 50:
                         clean_name = clean_name[:47] + "..."
                     
@@ -50,7 +45,8 @@ def get_local_merchants_ddg(search_term="wholesale distributor Kenya"):
                         "desc": f"{description} | Context-Tags: wholesale, retail supplier, merchant infrastructure."
                     }
                     local_listings.append(formatted_business)
-                    
+            
+            print(f"Successfully processed search query! Found {len(local_listings)} operational targets.")
             return local_listings
         else:
             print(f"Network node rejected pipeline. Status code: {response.status_code}")
@@ -61,7 +57,6 @@ def get_local_merchants_ddg(search_term="wholesale distributor Kenya"):
         return []
 
 if __name__ == "__main__":
-    # Fetch live businesses from the search pipeline
     merchant_leads = get_local_merchants_ddg()
     
     if merchant_leads:
