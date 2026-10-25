@@ -1,87 +1,71 @@
 import requests
-import json
-import time
+import re
+from bs4 import BeautifulSoup
 from job_dashboard import build_dashboard
 
-def get_local_merchants(region="Kenya"):
-    # A list of completely different, independent public mirror servers
-    overpass_servers = [
-        "https://kumi.systems",       # Highly reliable private mirror
-        "https://overpass-api.de",             # Main German server (with overflow)
-        "https://openstreetmap.ru"    # Alternative European mirror
-    ]
+def get_local_merchants_ddg(search_term="wholesale distributor Kenya"):
+    # Target DuckDuckGo's lightweight, non-JS endpoint
+    url = "https://duckduckgo.com"
     
-    print(f"Initializing spatial pipeline for {region}...")
+    print(f"Initializing search aggregation pipeline for: '{search_term}'...")
     
-    query = """[out:json][timeout:25];
-    area["ISO3166-1"="KE"]->.searchArea;
-    (
-      nwr["shop"~"wholesale|distributor|warehouse"](area.searchArea);
-      nwr["commercial"~"wholesale|logistics"](area.searchArea);
-    );
-    out tags;"""
-    
+    payload = {'q': search_term}
     headers = {
-        "User-Agent": "TenonworkOperationalAuditPipeline/1.0 (contact: swainaina551@gmail.com)",
-        "Accept": "application/json",
-        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
-    payload = {"data": query}
     
-    raw_data = None
-    
-    # Loop through each server until one works
-    for idx, url in enumerate(overpass_servers):
-        print(f"Attempting connection to Server {idx+1}/{len(overpass_servers)}: {url.split('/')[2]}...")
-        try:
-            # Shorter timeout per server so we failover quickly if one is hanging
-            response = requests.post(url, data=payload, headers=headers, timeout=20)
+    try:
+        # Request raw HTML from the anonymous search node
+        response = requests.post(url, data=payload, headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
             
-            if response.status_code == 200:
-                raw_data = response.json()
-                print("Server connection established successfully!")
-                break # We got our data, break out of the server fallback loop
-            else:
-                print(f"-> Server {idx+1} busy. Status code: {response.status_code}. Moving to next mirror...")
+            # Target the standard web result blocks
+            search_results = soup.find_all('div', class_='result')
+            print(f"Successfully processed search query! Found {len(search_results)} primary operational targets.")
+            
+            local_listings = []
+            
+            for result in search_results:
+                title_element = result.find('a', class_='result__url')
+                snippet_element = result.find('a', class_='result__snippet')
                 
-        except (requests.exceptions.RequestException, Exception) as e:
-            print(f"-> Server {idx+1} timed out or failed. Moving to next mirror...")
-            continue
+                if title_element and snippet_element:
+                    raw_name = title_element.text.strip()
+                    raw_url = title_element['href']
+                    description = snippet_element.text.strip()
+                    
+                    # Clean up the business name (remove trailing URLs if DDG appends them)
+                    clean_name = re.sub(r'\s+http.*$', '', raw_name)
+                    # Limit length for clean dashboard cards
+                    if len(clean_name) > 50:
+                        clean_name = clean_name[:47] + "..."
+                    
+                    formatted_business = {
+                        "title": "Local B2B Tooling Audit Opportunity",
+                        "company": clean_name,
+                        "location": "Local (East Africa Hub)",
+                        "url": raw_url,
+                        "desc": f"{description} | Context-Tags: wholesale, retail supplier, merchant infrastructure."
+                    }
+                    local_listings.append(formatted_business)
+                    
+            return local_listings
+        else:
+            print(f"Network node rejected pipeline. Status code: {response.status_code}")
+            return []
             
-    if not raw_data:
-        print("\nAll public Overpass servers are currently at capacity due to global traffic limits.")
-        print("Recommendation: Wait 1-2 minutes and execute python fetch_local_merchants.py again.")
+    except Exception as e:
+        print(f"An error occurred during target ingestion: {e}")
         return []
-        
-    elements = raw_data.get('elements', [])
-    print(f"Successfully retrieved {len(elements)} live local business profiles!")
-    local_listings = []
-    
-    for item in elements:
-        tags = item.get('tags', {})
-        name = tags.get('name', 'Unbranded Local Merchant')
-        
-        city = tags.get('addr:city', tags.get('is_in:city', ''))
-        suburb = tags.get('addr:suburb', tags.get('addr:neighborhood', ''))
-        location_str = f"{suburb}, {city}".strip(", ") if (suburb or city) else "East Africa Regional Center"
-        
-        description = f"Operational merchant node. Type-tagging: {', '.join(tags.keys())}. "
-        if 'operator' in tags: description += f"Managed by {tags['operator']}. "
-        
-        formatted_business = {
-            "title": "Local B2B Architecture Audit Opportunity",
-            "company": name,
-            "location": f"Local ({location_str})",
-            "url": tags.get('website', f"https://google.com{name.replace(' ', '+')}+Kenya"),
-            "desc": description
-        }
-        local_listings.append(formatted_business)
-        
-    return local_listings
 
 if __name__ == "__main__":
-    merchant_leads = get_local_merchants()
+    # Fetch live businesses from the search pipeline
+    merchant_leads = get_local_merchants_ddg()
     
     if merchant_leads:
-        print("Processing local business profiles through your custom scoring engine...")
+        print("Processing targets through your custom scoring engine...")
         build_dashboard(merchant_leads)
+    else:
+        print("No business entries retrieved. Try modifying your search parameters.")
