@@ -29,26 +29,50 @@ mock_scraped_jobs = [
 # 2. The Smart Filter Engine
 def score_job(job):
     score = 0
+    # We combine title and description to scan everything at once
     text = (job['title'] + " " + job['desc']).lower()
     
-    # Custom Rules
     matches_found = []
     red_flags_found = []
     
-    good_words = ["python", "sql", "git", "django", "intern", "junior"]
-    bad_words = ["senior", "lead", "10+ years", "onsite", "manager"]
+    # --- EDIT THESE DICTIONARIES TO MATCH YOUR PROFILE ---
     
-    for word in good_words:
+    # 1. Technologies you KNOW well (+7 points each)
+    core_skills = ["python", "sql", "javascript", "html", "css"]
+    
+    # 2. Technologies you are LEARNING or open to (+3 points each)
+    secondary_skills = ["django", "flask", "git", "react", "rest api"]
+    
+    # 3. Role level indicators that match you (+5 points each)
+    good_roles = ["junior", "entry level", "associate", "intern", "remote"]
+    
+    # 4. Total dealbreakers (-15 points each)
+    dealbreakers = ["senior", "lead", "staff", "architect", "manager", "10+", "5+ years", "onsite"]
+    
+    # --- SCORING ENGINE ---
+    
+    for word in core_skills:
+        if word in text:
+            score += 7
+            matches_found.append(word)
+            
+    for word in secondary_skills:
+        if word in text:
+            score += 3
+            matches_found.append(word)
+            
+    for word in good_roles:
         if word in text:
             score += 5
             matches_found.append(word)
             
-    for word in bad_words:
+    for word in dealbreakers:
         if word in text:
-            score -= 10
+            score -= 15
             red_flags_found.append(word)
             
     return score, matches_found, red_flags_found
+
 
 # 3. The Dashboard Generator
 def build_dashboard(jobs):
