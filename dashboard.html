@@ -1,32 +1,371 @@
-
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <title>My Job Triage Dashboard</title>
-        <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f8; margin: 0; padding: 40px; }
-            .container { max-width: 900px; margin: auto; }
-            h1 { color: #1e293b; }
-            .card { background: white; padding: 20px; margin-bottom: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); display: flex; justify-content: space-between; align-items: center; }
-            .info { flex-grow: 1; }
-            .title { font-size: 18px; font-weight: bold; color: #0f172a; margin: 0 0 5px 0; }
-            .company { color: #64748b; font-size: 14px; margin-bottom: 10px; }
-            .badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; margin-right: 5px; }
-            .badge-good { background: #dcfce7; color: #15803d; }
-            .badge-bad { background: #fee2e2; color: #b91c1c; }
-            .score-box { text-align: center; margin-left: 20px; min-width: 80px; }
-            .score { font-size: 24px; font-weight: bold; }
-            .btn { display: inline-block; background: #2563eb; color: white; text-decoration: none; padding: 10px 16px; border-radius: 6px; font-weight: 500; margin-top: 10px; }
-            .btn:hover { background: #1d4ed8; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>🎯 Job Match Dashboard</h1>
-            <p>Review matches, click to open, and let your browser extension autofill the application safely.</p>
-    
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Job Triage Dashboard</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #f4f6f8;
+            margin: 0;
+            padding: 40px;
+        }
+        .container { max-width: 960px; margin: auto; }
+        h1 { color: #1e293b; margin-bottom: 4px; }
+        .subtitle { color: #64748b; font-size: 14px; margin-bottom: 32px; }
+        .section { margin-bottom: 48px; }
+        h2 {
+            color: #1e293b;
+            border-bottom: 2px solid #e2e8f0;
+            padding-bottom: 8px;
+            margin-bottom: 16px;
+            font-size: 20px;
+        }
+        .section-count {
+            font-size: 13px;
+            font-weight: normal;
+            color: #64748b;
+            margin-left: 8px;
+        }
+        .card {
+            background: white;
+            padding: 20px;
+            margin-bottom: 16px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .info { flex-grow: 1; }
+        .title { font-size: 17px; font-weight: bold; color: #0f172a; margin: 0 0 4px 0; }
+        .company { color: #64748b; font-size: 13px; margin-bottom: 10px; }
+        .badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            margin-right: 4px;
+        }
+        .badge-good { background: #dcfce7; color: #15803d; }
+        .badge-bad  { background: #fee2e2; color: #b91c1c; }
+        .score-box { text-align: center; margin-left: 24px; min-width: 72px; }
+        .score { font-size: 26px; font-weight: bold; }
+        .btn {
+            display: inline-block;
+            background: #2563eb;
+            color: white;
+            text-decoration: none;
+            padding: 8px 14px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            margin-top: 10px;
+        }
+        .btn:hover { background: #1d4ed8; }
+        .empty { color: #94a3b8; font-style: italic; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎯 Job Triage Dashboard</h1>
+        <p class="subtitle">All sources — review matches and click to open.</p>
+        
+        <div class="section">
+            <h2>🌐 Remote Job Matches <span class="section-count">2 matches</span></h2>
+            
+        <div class="card">
+            <div class="info">
+                <div class="title">AI Trainer - Video Annotation</div>
+                <div class="company">iMerit Technology &bull; Remote (Worldwide)</div>
+                <div><span class="badge badge-good">remote</span></div>
+                <a href="https://remotive.com/remote-jobs/artificial-intelligence/ai-trainer-video-annotation-2091161" target="_blank" class="btn">Review Entry &rarr;</a>
+            </div>
+            <div class="score-box">
+                <div style="color: #dc2626;" class="score">5</div>
+                <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+            </div>
         </div>
-    </body>
-    </html>
-    
+
+        <div class="card">
+            <div class="info">
+                <div class="title">Remote Office Assistant</div>
+                <div class="company">Coalition Technologies  &bull; Remote (Worldwide)</div>
+                <div><span class="badge badge-good">remote</span></div>
+                <a href="https://remotive.com/remote-jobs/marketing/remote-office-assistant-1680495" target="_blank" class="btn">Review Entry &rarr;</a>
+            </div>
+            <div class="score-box">
+                <div style="color: #dc2626;" class="score">5</div>
+                <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+            </div>
+        </div>
+        </div>
+        
+        <div class="section">
+            <h2>📍 Local B2B Leads <span class="section-count">20 matches</span></h2>
+            
+        <div class="card">
+            <div class="info">
+                <div class="title">Software Developer Jobs, Vacancies in Nairobi | Careerjet</div>
+                <div class="company">Local / East Africa &bull; Local (Kenya / East Africa)</div>
+                <div><span class="badge badge-good">nairobi</span></div>
+                <a href="https://www.careerjet.co.ke/software-developer-jobs/Nairobi" target="_blank" class="btn">Review Entry &rarr;</a>
+            </div>
+            <div class="score-box">
+                <div style="color: #2563eb;" class="score">5</div>
+                <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="info">
+                <div class="title">142 Software Developer jobs in Kenya - LinkedIn</div>
+                <div class="company">Local / East Africa &bull; Local (Kenya / East Africa)</div>
+                <div></div>
+                <a href="https://ke.linkedin.com/jobs/software-developer-jobs" target="_blank" class="btn">Review Entry &rarr;</a>
+            </div>
+            <div class="score-box">
+                <div style="color: #2563eb;" class="score">0</div>
+                <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="info">
+                <div class="title">Software Development Jobs in Kenya (167 Open Roles) | Lin...</div>
+                <div class="company">Local / East Africa &bull; Local (Kenya / East Africa)</div>
+                <div></div>
+                <a href="https://ke.linkedin.com/jobs/software-development-jobs" target="_blank" class="btn">Review Entry &rarr;</a>
+            </div>
+            <div class="score-box">
+                <div style="color: #2563eb;" class="score">0</div>
+                <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="info">
+                <div class="title">Software Developer Jobs in Nairobi, Kenya — Masters Africa</div>
+                <div class="company">Local / East Africa &bull; Local (Kenya / East Africa)</div>
+                <div><span class="badge badge-good">nairobi</span></div>
+                <a href="https://masters.africa/en/hire/developer-in-nairobi" target="_blank" class="btn">Review Entry &rarr;</a>
+            </div>
+            <div class="score-box">
+                <div style="color: #2563eb;" class="score">5</div>
+                <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="info">
+                <div class="title">23 System Software Developer jobs in Nairobi - LinkedIn</div>
+                <div class="company">Local / East Africa &bull; Local (Kenya / East Africa)</div>
+                <div><span class="badge badge-good">nairobi</span></div>
+                <a href="https://www.linkedin.com/jobs/system-software-developer-jobs-nairobi" target="_blank" class="btn">Review Entry &rarr;</a>
+            </div>
+            <div class="score-box">
+                <div style="color: #2563eb;" class="score">5</div>
+                <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="info">
+                <div class="title">Software Developer Jobs in Nairobi, Kenya - crossover.com</div>
+                <div class="company">Local / East Africa &bull; Local (Kenya / East Africa)</div>
+                <div><span class="badge badge-good">nairobi</span><span class="badge badge-good">remote</span></div>
+                <a href="https://www.crossover.com/jobs/software-developer/ke/nairobi" target="_blank" class="btn">Review Entry &rarr;</a>
+            </div>
+            <div class="score-box">
+                <div style="color: #2563eb;" class="score">10</div>
+                <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="info">
+                <div class="title">job opportunities for software developer Jobs in Nairobi</div>
+                <div class="company">Local / East Africa &bull; Local (Kenya / East Africa)</div>
+                <div><span class="badge badge-good">nairobi</span></div>
+                <a href="https://www.careerjet.co.ke/job-opportunities-for-software-developer-jobs/Nairobi" target="_blank" class="btn">Review Entry &rarr;</a>
+            </div>
+            <div class="score-box">
+                <div style="color: #2563eb;" class="score">5</div>
+                <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="info">
+                <div class="title">37 software developer jobs in Kenya | Saplic</div>
+                <div class="company">Local / East Africa &bull; Local (Kenya / East Africa)</div>
+                <div></div>
+                <a href="https://saplic.com/ke/vacancies/software-developer" target="_blank" class="btn">Review Entry &rarr;</a>
+            </div>
+            <div class="score-box">
+                <div style="color: #2563eb;" class="score">0</div>
+                <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="info">
+                <div class="title">Software & Data Jobs in Kenya - BrighterMonday</div>
+                <div class="company">Local / East Africa &bull; Local (Kenya / East Africa)</div>
+                <div></div>
+                <a href="https://www.brightermonday.co.ke/jobs/software-data" target="_blank" class="btn">Review Entry &rarr;</a>
+            </div>
+            <div class="score-box">
+                <div style="color: #2563eb;" class="score">0</div>
+                <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="info">
+                <div class="title">Developer Jobs in Nairobi, Kenya - crossover.com</div>
+                <div class="company">Local / East Africa &bull; Local (Kenya / East Africa)</div>
+                <div><span class="badge badge-good">nairobi</span></div>
+                <a href="https://www.crossover.com/jobs/dev/ke/nairobi" target="_blank" class="btn">Review Entry &rarr;</a>
+            </div>
+            <div class="score-box">
+                <div style="color: #2563eb;" class="score">5</div>
+                <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="info">
+                <div class="title">Remote Junior Developer Jobs in Kenya - remoterocketship.com</div>
+                <div class="company">Local / East Africa &bull; Local (Kenya / East Africa)</div>
+                <div><span class="badge badge-good">remote</span></div>
+                <a href="https://www.remoterocketship.com/country/kenya/jobs/junior-developer/" target="_blank" class="btn">Review Entry &rarr;</a>
+            </div>
+            <div class="score-box">
+                <div style="color: #2563eb;" class="score">5</div>
+                <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="info">
+                <div class="title">remote developer Jobs, Vacancies in Kenya | Careerjet</div>
+                <div class="company">Local / East Africa &bull; Local (Kenya / East Africa)</div>
+                <div><span class="badge badge-good">remote</span></div>
+                <a href="https://www.careerjet.co.ke/remote-developer-jobs" target="_blank" class="btn">Review Entry &rarr;</a>
+            </div>
+            <div class="score-box">
+                <div style="color: #2563eb;" class="score">5</div>
+                <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="info">
+                <div class="title">Remote Developer Jobs in Kenya (20 Open Roles) | LinkedIn</div>
+                <div class="company">Local / East Africa &bull; Local (Kenya / East Africa)</div>
+                <div><span class="badge badge-good">remote</span></div>
+                <a href="https://ke.linkedin.com/jobs/remote-developer-jobs" target="_blank" class="btn">Review Entry &rarr;</a>
+            </div>
+            <div class="score-box">
+                <div style="color: #2563eb;" class="score">5</div>
+                <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="info">
+                <div class="title">Junior Software Developer Jobs in Kenya - Careerjet</div>
+                <div class="company">Local / East Africa &bull; Local (Kenya / East Africa)</div>
+                <div></div>
+                <a href="https://www.careerjet.co.ke/junior-software-developer-jobs" target="_blank" class="btn">Review Entry &rarr;</a>
+            </div>
+            <div class="score-box">
+                <div style="color: #2563eb;" class="score">0</div>
+                <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="info">
+                <div class="title">102 Remote Software Developer jobs in Kenya - LinkedIn</div>
+                <div class="company">Local / East Africa &bull; Local (Kenya / East Africa)</div>
+                <div><span class="badge badge-good">remote</span></div>
+                <a href="https://ke.linkedin.com/jobs/remote-software-developer-jobs" target="_blank" class="btn">Review Entry &rarr;</a>
+            </div>
+            <div class="score-box">
+                <div style="color: #2563eb;" class="score">5</div>
+                <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="info">
+                <div class="title">Remote Entry-level Junior Software Developer Jobs in Kenya</div>
+                <div class="company">Local / East Africa &bull; Local (Kenya / East Africa)</div>
+                <div><span class="badge badge-good">remote</span></div>
+                <a href="https://himalayas.app/jobs/countries/kenya/entry-level-junior-software-developer" target="_blank" class="btn">Review Entry &rarr;</a>
+            </div>
+            <div class="score-box">
+                <div style="color: #2563eb;" class="score">5</div>
+                <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="info">
+                <div class="title">Remote Junior Software Engineer Jobs in Kenya</div>
+                <div class="company">Local / East Africa &bull; Local (Kenya / East Africa)</div>
+                <div><span class="badge badge-good">remote</span><span class="badge badge-bad">architect</span></div>
+                <a href="https://www.remoterocketship.com/country/kenya/jobs/junior-software-engineer/" target="_blank" class="btn">Review Entry &rarr;</a>
+            </div>
+            <div class="score-box">
+                <div style="color: #2563eb;" class="score">-25</div>
+                <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="info">
+                <div class="title">Remote Jobs for Kenyan Developers: Where They Are Actuall...</div>
+                <div class="company">Local / East Africa &bull; Local (Kenya / East Africa)</div>
+                <div><span class="badge badge-good">remote</span></div>
+                <a href="https://www.mctaba.com/learn/freelancing/remote-jobs-kenyan-developers" target="_blank" class="btn">Review Entry &rarr;</a>
+            </div>
+            <div class="score-box">
+                <div style="color: #2563eb;" class="score">5</div>
+                <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="info">
+                <div class="title">Remote Jobs for Kenyan Developers: Where to Find Them (20...</div>
+                <div class="company">Local / East Africa &bull; Local (Kenya / East Africa)</div>
+                <div><span class="badge badge-good">remote</span></div>
+                <a href="https://www.mctaba.com/learn/careers/remote-jobs-kenyan-developers" target="_blank" class="btn">Review Entry &rarr;</a>
+            </div>
+            <div class="score-box">
+                <div style="color: #2563eb;" class="score">5</div>
+                <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="info">
+                <div class="title">Junior Developer jobs in Remote - Indeed</div>
+                <div class="company">Local / East Africa &bull; Local (Kenya / East Africa)</div>
+                <div><span class="badge badge-good">remote</span></div>
+                <a href="https://www.indeed.com/q-Junior-Developer-l-Remote-jobs.html" target="_blank" class="btn">Review Entry &rarr;</a>
+            </div>
+            <div class="score-box">
+                <div style="color: #2563eb;" class="score">5</div>
+                <div style="font-size: 12px; color: #64748b;">Match Rating</div>
+            </div>
+        </div>
+        </div>
+    </div>
+</body>
+</html>

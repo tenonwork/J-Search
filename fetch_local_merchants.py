@@ -1,66 +1,74 @@
 import requests
 import re
 from bs4 import BeautifulSoup
-from job_dashboard import build_dashboard
 
-def get_local_merchants_ddg(search_term="wholesale distributor Kenya"):
+
+# Search queries targeting actual tech job postings in East Africa
+_SEARCH_QUERIES = [
+    "software developer jobs nairobi kenya 2024",
+    "junior developer jobs kenya remote",
+]
+
+
+def _scrape_ddg(search_term, headers):
+    """Run a single DDG search and return raw result elements."""
     url = "https://html.duckduckgo.com/html/"
-    
-    print(f"Initializing search aggregation pipeline for: '{search_term}'...")
-    
-    payload = {'q': search_term}
+    try:
+        response = requests.post(url, data={'q': search_term}, headers=headers, timeout=15)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            return soup.find_all('div', class_='result')
+    except Exception:
+        pass
+    return []
+
+
+def get_local_merchants_ddg():
+    """
+    Scrape local East African tech job postings from DuckDuckGo
+    and format them for the dashboard.
+    """
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
-    
-    try:
-        response = requests.post(url, data=payload, headers=headers, timeout=15)
-        
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Target the standard web result blocks
-            search_results = soup.find_all('div', class_='result')
-            local_listings = []
-            
-            for result in search_results:
-                # FIX: Target 'result__a' instead of 'result__url'
-                title_element = result.find('a', class_='result__a')
-                snippet_element = result.find('a', class_='result__snippet')
-                
-                if title_element and snippet_element:
-                    raw_name = title_element.text.strip()
-                    raw_url = title_element['href']
-                    description = snippet_element.text.strip()
-                    
-                    clean_name = re.sub(r'\s+http.*$', '', raw_name)
-                    if len(clean_name) > 50:
-                        clean_name = clean_name[:47] + "..."
-                    
-                    formatted_business = {
-                        "title": "Local B2B Tooling Audit Opportunity",
-                        "company": clean_name,
-                        "location": "Local (East Africa Hub)",
-                        "url": raw_url,
-                        "desc": f"{description} | Context-Tags: wholesale, retail supplier, merchant infrastructure."
-                    }
-                    local_listings.append(formatted_business)
-            
-            print(f"Successfully processed search query! Found {len(local_listings)} operational targets.")
-            return local_listings
-        else:
-            print(f"Network node rejected pipeline. Status code: {response.status_code}")
-            return []
-            
-    except Exception as e:
-        print(f"An error occurred during target ingestion: {e}")
-        return []
 
-if __name__ == "__main__":
-    merchant_leads = get_local_merchants_ddg()
-    
-    if merchant_leads:
-        print("Processing targets through your custom scoring engine...")
-        build_dashboard(merchant_leads)
-    else:
-        print("No business entries retrieved. Try modifying your search parameters.")
+    print(f"  [Local Jobs] Searching for East African tech job postings...")
+
+    seen_urls = set()
+    local_listings = []
+
+    for query in _SEARCH_QUERIES:
+        results = _scrape_ddg(query, headers)
+
+        for result in results:
+            title_element   = result.find('a', class_='result__a')
+            snippet_element = result.find('a', class_='result__snippet')
+
+            if not (title_element and snippet_element):
+                continue
+
+            raw_url     = title_element['href']
+            # Deduplicate across queries
+            if raw_url in seen_urls:
+                continue
+            seen_urls.add(raw_url)
+
+            job_title   = title_element.text.strip()
+            description = snippet_element.text.strip()
+
+            # Trim overly long titles
+            if len(job_title) > 60:
+                job_title = job_title[:57] + "..."
+
+            formatted_job = {
+                "title": job_title,
+                "company": "Local / East Africa",
+                "location": "Local (Kenya / East Africa)",
+                "url": raw_url,
+                "desc": description
+            }
+            local_listings.append(formatted_job)
+
+    print(f"  [Local Jobs] Found {len(local_listings)} local postings.")
+    return local_listings
+
