@@ -122,6 +122,10 @@ def build_dashboard(jobs):
     # Process each job and add it to the HTML layout
     for job in jobs:
         score, goods, bads = score_job(job)
+        # GATEKEEPER: Drop any job that scores 10 points or less.
+        # This completely wipes out irrelevant writing, translation, or senior admin roles.
+        if score <= 10:
+            continue
         
         # Determine color based on score
         score_color = "#16a34a" if score > 0 else "#dc2626"
