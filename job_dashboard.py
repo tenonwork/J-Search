@@ -120,21 +120,22 @@ def build_dashboard(jobs):
     """
     
     # Process each job and add it to the HTML layout
+        # Process each job/lead and add it to the HTML layout
     for job in jobs:
         score, goods, bads = score_job(job)
         
-        # 1. HARD DROP: If ANY dealbreakers/red flags were found, skip it immediately
-        # This completely drops Senior or Lead roles regardless of how high their score is
+        # 1. HARD DROP: Drops any Senior/Lead corporate noise immediately
         if len(bads) > 0:
             continue
             
-        # 2. SCORE GATEKEEPER: Drop low-matching noise
-        if score <= 10:
+        # 2. SCORE GATEKEEPER: Keeps highly targeted entities
+        # Note: If local merchant descriptions are short, they might score lower than verbose job ads.
+        # If your local dashboard opens blank, temporarily lower this threshold to 0 or 5 to view all entries.
+        if score <= 5:
             continue
-
-        
-        # Determine color based on score
-        score_color = "#16a34a" if score > 0 else "#dc2626"
+            
+        # Determine color layout based on score strength
+        score_color = "#16a34a" if score >= 15 else "#ea580c" if score > 5 else "#dc2626"
         
         good_badges = "".join([f'<span class="badge badge-good">{w}</span>' for w in goods])
         bad_badges = "".join([f'<span class="badge badge-bad">{w}</span>' for w in bads])
@@ -145,7 +146,7 @@ def build_dashboard(jobs):
                     <div class="title">{job['title']}</div>
                     <div class="company">{job['company']} • {job['location']}</div>
                     <div>{good_badges}{bad_badges}</div>
-                    <a href="{job['url']}" target="_blank" class="btn">Review & Apply →</a>
+                    <a href="{job['url']}" target="_blank" class="btn">Review Entry →</a>
                 </div>
                 <div class="score-box">
                     <div style="color: {score_color};" class="score">{score}</div>
@@ -153,6 +154,7 @@ def build_dashboard(jobs):
                 </div>
             </div>
         """
+
         
     html_content += """
         </div>
