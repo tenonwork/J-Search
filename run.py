@@ -20,6 +20,7 @@ from fetch_live_jobs import get_live_remote_jobs
 from fetch_local_merchants import get_local_merchants_ddg
 from fetch_rss_jobs import get_rss_remote_jobs
 from job_dashboard import build_dashboard, get_scoring_config, score_job, _is_blocked
+import db
 
 PORT = 8765
 
@@ -28,6 +29,19 @@ _pipeline_running = False
 _global_jobs = []
 _local_jobs = []
 _current_config = get_scoring_config("balanced")
+
+
+def _score_for_storage(jobs):
+    """Attach score/matches/redFlags so the DB stores meaningful values."""
+    scored = []
+    for job in jobs:
+        score, goods, bads = score_job(job, _current_config)
+        enriched = dict(job)
+        enriched['score'] = score
+        enriched['matches'] = goods
+        enriched['redFlags'] = bads
+        scored.append(enriched)
+    return scored
 
 
 def _deduplicate_jobs(jobs):
@@ -63,6 +77,10 @@ def run_pipeline_global():
         all_remote_combined = remote_jobs + rss_jobs
         all_remote = _deduplicate_jobs(all_remote_combined)
         _global_jobs = all_remote
+        try:
+            db.save_jobs(_score_for_storage(_global_jobs), 'global')
+        except Exception:
+            pass
 
         print()
         print(f"  Global jobs fetched : {len(_global_jobs)} (unique)")
@@ -84,6 +102,10 @@ def run_pipeline_local():
         local_leads = get_local_merchants_ddg()
         all_local = _deduplicate_jobs(local_leads)
         _local_jobs = all_local
+        try:
+            db.save_jobs(_score_for_storage(_local_jobs), 'local')
+        except Exception:
+            pass
 
         print()
         print(f"  Local jobs fetched : {len(_local_jobs)} (unique)")
@@ -111,6 +133,11 @@ def run_pipeline_all():
         all_local = _deduplicate_jobs(local_leads)
         _global_jobs = all_remote
         _local_jobs = all_local
+        try:
+            db.save_jobs(_score_for_storage(_global_jobs), 'global')
+            db.save_jobs(_score_for_storage(_local_jobs), 'local')
+        except Exception:
+            pass
 
         print()
         print(f"  Global jobs fetched : {len(_global_jobs)} (unique)")
@@ -120,6 +147,24 @@ def run_pipeline_all():
         print("  Pipeline complete.")
     finally:
         _pipeline_running = False
+
+
+def _start_pipeline(mode):
+    """Start a pipeline run in the background. Sets the running flag before
+    returning so the loading page never sees a false 'done' state."""
+    global _pipeline_running
+    if _pipeline_running:
+        return False
+
+    target = {
+        'global': run_pipeline_global,
+        'local': run_pipeline_local,
+        'all': run_pipeline_all,
+    }.get(mode, run_pipeline_all)
+
+    _pipeline_running = True
+    threading.Thread(target=target, daemon=True).start()
+    return True
 
 
 LOADING_PAGE = """<!DOCTYPE html>
@@ -179,42 +224,43 @@ LOADING_PAGE = """<!DOCTYPE html>
 
 class DashboardHandler(BaseHTTPRequestHandler):
 
+    def _jobs_from_db(self):
+        """Load persisted jobs from SQLite when nothing is in memory."""
+        global _global_jobs, _local_jobs
+        try:
+            if not _global_jobs:
+                _global_jobs = db.get_jobs('global')
+            if not _local_jobs:
+                _local_jobs = db.get_jobs('local')
+        except Exception as e:
+            print('[DB] Could not load jobs:', e)
+
     def do_GET(self):
         global _pipeline_running
         
         if self.path == '/':
+            self._jobs_from_db()
+            try:
+                build_dashboard(remote_jobs=_global_jobs, local_leads=_local_jobs, config=_current_config)
+            except Exception as e:
+                print('[Dashboard] Rebuild failed:', e)
             self._serve_file('dashboard.html', 'text/html; charset=utf-8')
         elif self.path.startswith('/run'):
             parsed = urlparse(self.path)
             params = parse_qs(parsed.query)
             mode = params.get('mode', ['all'])[0]
-            
-            if not _pipeline_running:
-                if _pipeline_lock.acquire(blocking=False):
-                    try:
-                        if mode == 'global':
-                            thread = threading.Thread(target=run_pipeline_global, daemon=True)
-                        elif mode == 'local':
-                            thread = threading.Thread(target=run_pipeline_local, daemon=True)
-                        else:
-                            thread = threading.Thread(target=run_pipeline_all, daemon=True)
-                        thread.start()
-                    finally:
-                        _pipeline_lock.release()
-                else:
-                    if mode == 'global':
-                        thread = threading.Thread(target=run_pipeline_global, daemon=True)
-                    elif mode == 'local':
-                        thread = threading.Thread(target=run_pipeline_local, daemon=True)
-                    else:
-                        thread = threading.Thread(target=run_pipeline_all, daemon=True)
-                    thread.start()
+            _start_pipeline(mode)
             self._respond(200, LOADING_PAGE.encode('utf-8'), 'text/html; charset=utf-8')
         elif self.path == '/status':
             status = {"running": _pipeline_running}
             body = json.dumps(status).encode('utf-8')
             self._respond(200, body, 'application/json')
+        elif self.path == '/api/keywords':
+            kws = db.get_keywords()
+            body = json.dumps(kws).encode('utf-8')
+            self._respond(200, body, 'application/json')
         elif self.path == '/api/jobs':
+            self._jobs_from_db()
             all_jobs = []
             for job in _global_jobs:
                 score, goods, bads = score_job(job, _current_config)
@@ -252,15 +298,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._respond(404, b'Not found')
 
     def do_POST(self):
-        global _pipeline_running
         if self.path == '/refresh':
-            if not _pipeline_running:
-                if _pipeline_lock.acquire(blocking=False):
-                    try:
-                        thread = threading.Thread(target=run_pipeline_all, daemon=True)
-                        thread.start()
-                    finally:
-                        _pipeline_lock.release()
+            _start_pipeline('all')
+            self._respond(200, b'{"status":"ok"}', 'application/json')
+        elif self.path == '/api/keywords/add':
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else '{}'
+            try:
+                data = json.loads(body)
+                kw_type = data.get('type', 'focus')
+                value = data.get('value', '')
+                if value:
+                    db.add_keyword(kw_type, value)
+            except Exception:
+                pass
+            self._respond(200, b'{"status":"ok"}', 'application/json')
+        elif self.path == '/api/keywords/delete':
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else '{}'
+            try:
+                data = json.loads(body)
+                kw_type = data.get('type', 'focus')
+                values = data.get('values', [])
+                if values:
+                    db.delete_keywords(kw_type, values)
+            except Exception:
+                pass
             self._respond(200, b'{"status":"ok"}', 'application/json')
         elif self.path == '/run':
             content_length = int(self.headers.get('Content-Length', 0))
@@ -270,18 +333,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 mode = data.get('mode', 'all')
             except Exception:
                 mode = 'all'
-            if not _pipeline_running:
-                if _pipeline_lock.acquire(blocking=False):
-                    try:
-                        if mode == 'global':
-                            thread = threading.Thread(target=run_pipeline_global, daemon=True)
-                        elif mode == 'local':
-                            thread = threading.Thread(target=run_pipeline_local, daemon=True)
-                        else:
-                            thread = threading.Thread(target=run_pipeline_all, daemon=True)
-                        thread.start()
-                    finally:
-                        _pipeline_lock.release()
+            _start_pipeline(mode)
             self._respond(200, b'{"status":"ok"}', 'application/json')
         else:
             self._respond(404, b'Not found')
@@ -293,6 +345,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', content_type)
             self.send_header('Content-Length', len(data))
+            self.send_header('Cache-Control', 'no-store, max-age=0')
             self.end_headers()
             self.wfile.write(data)
         except FileNotFoundError:
@@ -302,6 +355,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', len(body))
+        self.send_header('Cache-Control', 'no-store, max-age=0')
         self.end_headers()
         self.wfile.write(body)
 
