@@ -16,9 +16,11 @@ import threading
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlparse
 
 from fetch_live_jobs import get_live_remote_jobs
 from fetch_local_merchants import get_local_merchants_ddg
+from fetch_rss_jobs import get_rss_remote_jobs
 from job_dashboard import build_dashboard
 
 PORT = 8765
@@ -32,6 +34,30 @@ _pipeline_running = False
 # Pipeline
 # ---------------------------------------------------------------------------
 
+def _deduplicate_jobs(jobs):
+    """Deduplicate jobs by normalized URL."""
+    seen = set()
+    unique = []
+    for job in jobs:
+        url = job.get('url', '') or ''
+        try:
+            parsed = urlparse(url)
+            # Normalize URL - remove query params and fragments for dedup
+            normalized = f"{parsed.scheme}://{parsed.netloc}{parsed.path}".lower().rstrip('/')
+        except Exception:
+            normalized = url.lower().strip()
+        
+        if not normalized or normalized == 'http://' or normalized == 'https://':
+            # If no valid URL, use title+company as fallback
+            normalized = f"{job.get('title','')}|{job.get('company','')}".lower()
+        
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(job)
+    return unique
+
+
 def run_pipeline():
     global _pipeline_running
     _pipeline_running = True
@@ -41,14 +67,22 @@ def run_pipeline():
         print("=" * 50)
 
         remote_jobs = get_live_remote_jobs()
+        rss_jobs = get_rss_remote_jobs()
         local_leads = get_local_merchants_ddg()
 
+        # Combine all remote sources
+        all_remote_combined = remote_jobs + rss_jobs
+
+        # Normalize and deduplicate
+        all_remote = _deduplicate_jobs(all_remote_combined)
+        all_local = _deduplicate_jobs(local_leads)
+
         print()
-        print(f"  Remote jobs fetched : {len(remote_jobs)}")
-        print(f"  Local leads fetched : {len(local_leads)}")
+        print(f"  Remote jobs fetched : {len(remote_jobs) + len(rss_jobs)} (unique: {len(all_remote)})")
+        print(f"  Local leads fetched : {len(local_leads)} (unique: {len(all_local)})")
         print()
 
-        build_dashboard(remote_jobs=remote_jobs, local_leads=local_leads)
+        build_dashboard(remote_jobs=all_remote, local_leads=all_local)
         print("  Pipeline complete.")
     finally:
         _pipeline_running = False
@@ -143,7 +177,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     finally:
                         _pipeline_lock.release()
                 else:
-                    # Shouldn't happen often, but just in case
                     thread = threading.Thread(target=run_pipeline, daemon=True)
                     thread.start()
             self._respond(200, LOADING_PAGE.encode('utf-8'), 'text/html; charset=utf-8')
