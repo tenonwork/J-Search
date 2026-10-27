@@ -1,7 +1,7 @@
 import os
 import re
-import webbrowser
 from urllib.parse import urlparse
+
 
 
 # --- PAYWALLED / GATED DOMAIN BLOCKLIST ---
@@ -164,7 +164,7 @@ def build_dashboard(remote_jobs=None, local_leads=None):
     local_leads  = local_leads  or []
 
     remote_section = _build_section("Remote Job Matches", "🌐", remote_jobs) if remote_jobs else ""
-    local_section  = _build_section("Local B2B Leads",    "📍", local_leads)  if local_leads  else ""
+    local_section  = _build_section("Local Job Listings",  "📍", local_leads)  if local_leads  else ""
 
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
@@ -234,15 +234,99 @@ def build_dashboard(remote_jobs=None, local_leads=None):
         }}
         .btn:hover {{ background: #1d4ed8; }}
         .empty {{ color: #94a3b8; font-style: italic; }}
+
+        /* --- Refresh button --- */
+        .refresh-btn {{
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: #0f172a;
+            color: white;
+            border: none;
+            padding: 9px 18px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+            margin-bottom: 28px;
+        }}
+        .refresh-btn:hover  {{ background: #1e293b; }}
+        .refresh-btn:disabled {{ opacity: 0.5; cursor: not-allowed; }}
+
+        /* --- Full-page loader overlay --- */
+        #loader {{
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.65);
+            backdrop-filter: blur(4px);
+            z-index: 999;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 20px;
+            color: white;
+        }}
+        .spinner {{
+            width: 52px;
+            height: 52px;
+            border: 5px solid rgba(255,255,255,0.2);
+            border-top-color: #60a5fa;
+            border-radius: 50%;
+            animation: spin 0.9s linear infinite;
+        }}
+        @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+        #loader p {{ font-size: 16px; font-weight: 500; margin: 0; opacity: 0.9; }}
     </style>
 </head>
 <body>
+    <!-- Full-page loader shown during refresh -->
+    <div id="loader">
+        <div class="spinner"></div>
+        <p>Fetching new results&hellip;</p>
+    </div>
+
     <div class="container">
         <h1>🎯 Job Triage Dashboard</h1>
         <p class="subtitle">All sources — review matches and click to open.</p>
+
+        <button class="refresh-btn" id="refresh-btn" onclick="triggerRefresh()">
+            🔄 Refresh Results
+        </button>
+
         {remote_section}
         {local_section}
     </div>
+
+    <script>
+        async function triggerRefresh() {{
+            const btn    = document.getElementById('refresh-btn');
+            const loader = document.getElementById('loader');
+
+            btn.disabled = true;
+            loader.style.display = 'flex';
+
+            const tryRefresh = async () => {{
+                const res = await fetch('/refresh', {{ method: 'POST' }});
+                if (res.status === 429) {{
+                    // Pipeline already running — retry after 2 s
+                    await new Promise(r => setTimeout(r, 2000));
+                    return tryRefresh();
+                }}
+                if (!res.ok) throw new Error('Server error: ' + res.status);
+            }};
+
+            try {{
+                await tryRefresh();
+                location.reload();
+            }} catch (e) {{
+                loader.style.display = 'none';
+                btn.disabled = false;
+                alert('Refresh failed — is the server still running?\n\n' + e.message);
+            }}
+        }}
+    </script>
 </body>
 </html>"""
 
@@ -251,4 +335,3 @@ def build_dashboard(remote_jobs=None, local_leads=None):
         f.write(html_content)
 
     print(f"\n✅ Dashboard compiled → {os.path.realpath(output_file)}")
-    webbrowser.open('file://' + os.path.realpath(output_file))
