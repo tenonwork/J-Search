@@ -19,7 +19,8 @@ from urllib.parse import urlparse, parse_qs
 from fetch_live_jobs import get_live_remote_jobs
 from fetch_local_merchants import get_local_merchants_ddg
 from fetch_rss_jobs import get_rss_remote_jobs
-from job_dashboard import build_dashboard, get_scoring_config, score_job, _is_blocked
+from job_dashboard import build_dashboard, get_scoring_config, score_job, _is_blocked, job_key
+from applied_page import build_decisions_page
 import db
 
 PORT = 8765
@@ -48,19 +49,86 @@ def _deduplicate_jobs(jobs):
     seen = set()
     unique = []
     for job in jobs:
-        url = job.get('url', '') or ''
-        try:
-            parsed = urlparse(url)
-            normalized = f"{parsed.scheme}://{parsed.netloc}{parsed.path}".lower().rstrip('/')
-        except Exception:
-            normalized = url.lower().strip()
-        if not normalized or normalized in ('http://', 'https://'):
-            normalized = f"{job.get('title','')}|{job.get('company','')}".lower()
-        if normalized in seen:
+        key = job_key(job.get('url', ''), job.get('title', ''),
+                      job.get('company', ''), job.get('location', ''))
+        if key in seen:
             continue
-        seen.add(normalized)
+        seen.add(key)
         unique.append(job)
     return unique
+
+
+def _load_jobs_from_db():
+    """Load persisted jobs from SQLite when nothing is in memory."""
+    global _global_jobs, _local_jobs
+    try:
+        if not _global_jobs:
+            _global_jobs = db.get_jobs('global')
+        if not _local_jobs:
+            _local_jobs = db.get_jobs('local')
+    except Exception as e:
+        print('[DB] Could not load jobs:', e)
+
+
+def _decision_keys():
+    try:
+        return db.get_decision_keys()
+    except Exception as e:
+        print('[DB] Could not load decisions:', e)
+        return set()
+
+
+def _decision_counts():
+    try:
+        counts = db.get_decision_counts()
+        return {
+            'applied_count': counts.get('applied', 0),
+            'dismissed_count': counts.get('dismissed', 0),
+        }
+    except Exception as e:
+        print('[DB] Could not count decisions:', e)
+        return {'applied_count': 0, 'dismissed_count': 0}
+
+
+def _build_dashboard():
+    counts = _decision_counts()
+    build_dashboard(
+        remote_jobs=_global_jobs,
+        local_leads=_local_jobs,
+        config=_current_config,
+        exclude_keys=_decision_keys(),
+        applied_count=counts['applied_count'],
+        dismissed_count=counts['dismissed_count'],
+    )
+
+
+def _api_jobs():
+    """Scored jobs for the JSON endpoint, minus applied/hidden postings."""
+    exclude = _decision_keys()
+    all_jobs = []
+    for source, jobs in (('global', _global_jobs), ('local', _local_jobs)):
+        for job in jobs:
+            url = job.get('url', '')
+            if _is_blocked(url):
+                continue
+            key = job_key(url, job.get('title', ''), job.get('company', ''),
+                          job.get('location', ''))
+            if key in exclude:
+                continue
+            score, goods, bads = score_job(job, _current_config)
+            all_jobs.append({
+                "key": key,
+                "title": job.get('title'),
+                "company": job.get('company'),
+                "location": job.get('location'),
+                "url": job.get('url'),
+                "desc": job.get('desc'),
+                "score": score,
+                "matches": goods,
+                "redFlags": bads,
+                "source": source
+            })
+    return all_jobs
 
 
 def run_pipeline_global():
@@ -85,7 +153,7 @@ def run_pipeline_global():
         print()
         print(f"  Global jobs fetched : {len(_global_jobs)} (unique)")
         print()
-        build_dashboard(remote_jobs=_global_jobs, local_leads=_local_jobs, config=_current_config)
+        _build_dashboard()
         print("  Pipeline complete.")
     finally:
         _pipeline_running = False
@@ -110,7 +178,7 @@ def run_pipeline_local():
         print()
         print(f"  Local jobs fetched : {len(_local_jobs)} (unique)")
         print()
-        build_dashboard(remote_jobs=_global_jobs, local_leads=_local_jobs, config=_current_config)
+        _build_dashboard()
         print("  Pipeline complete.")
     finally:
         _pipeline_running = False
@@ -143,7 +211,7 @@ def run_pipeline_all():
         print(f"  Global jobs fetched : {len(_global_jobs)} (unique)")
         print(f"  Local jobs fetched : {len(_local_jobs)} (unique)")
         print()
-        build_dashboard(remote_jobs=_global_jobs, local_leads=_local_jobs, config=_current_config)
+        _build_dashboard()
         print("  Pipeline complete.")
     finally:
         _pipeline_running = False
@@ -224,88 +292,80 @@ LOADING_PAGE = """<!DOCTYPE html>
 
 class DashboardHandler(BaseHTTPRequestHandler):
 
-    def _jobs_from_db(self):
-        """Load persisted jobs from SQLite when nothing is in memory."""
-        global _global_jobs, _local_jobs
+    def _read_json(self):
         try:
-            if not _global_jobs:
-                _global_jobs = db.get_jobs('global')
-            if not _local_jobs:
-                _local_jobs = db.get_jobs('local')
+            length = int(self.headers.get('Content-Length', 0))
+            if length <= 0:
+                return {}
+            return json.loads(self.rfile.read(length).decode('utf-8'))
+        except Exception:
+            return {}
+
+    def _serve_decisions_page(self, status):
+        try:
+            decisions = db.get_decisions(status)
         except Exception as e:
-            print('[DB] Could not load jobs:', e)
+            print('[DB] Could not load decisions:', e)
+            decisions = []
+        counts = _decision_counts()
+        page = build_decisions_page(
+            decisions, status,
+            applied_count=counts['applied_count'],
+            dismissed_count=counts['dismissed_count'],
+        )
+        self._respond(200, page.encode('utf-8'), 'text/html; charset=utf-8')
 
     def do_GET(self):
         global _pipeline_running
-        
-        if self.path == '/':
-            self._jobs_from_db()
+        path = urlparse(self.path).path
+
+        if path == '/':
+            _load_jobs_from_db()
             try:
-                build_dashboard(remote_jobs=_global_jobs, local_leads=_local_jobs, config=_current_config)
+                _build_dashboard()
             except Exception as e:
                 print('[Dashboard] Rebuild failed:', e)
             self._serve_file('dashboard.html', 'text/html; charset=utf-8')
-        elif self.path.startswith('/run'):
+        elif path.startswith('/run'):
             parsed = urlparse(self.path)
             params = parse_qs(parsed.query)
             mode = params.get('mode', ['all'])[0]
             _start_pipeline(mode)
             self._respond(200, LOADING_PAGE.encode('utf-8'), 'text/html; charset=utf-8')
-        elif self.path == '/status':
+        elif path == '/status':
             status = {"running": _pipeline_running}
             body = json.dumps(status).encode('utf-8')
             self._respond(200, body, 'application/json')
-        elif self.path == '/api/keywords':
+        elif path == '/applied':
+            self._serve_decisions_page('applied')
+        elif path == '/hidden':
+            self._serve_decisions_page('dismissed')
+        elif path == '/api/keywords':
             kws = db.get_keywords()
             body = json.dumps(kws).encode('utf-8')
             self._respond(200, body, 'application/json')
-        elif self.path == '/api/jobs':
-            self._jobs_from_db()
-            all_jobs = []
-            for job in _global_jobs:
-                score, goods, bads = score_job(job, _current_config)
-                if _is_blocked(job.get('url', '')):
-                    continue
-                all_jobs.append({
-                    "title": job.get('title'),
-                    "company": job.get('company'),
-                    "location": job.get('location'),
-                    "url": job.get('url'),
-                    "desc": job.get('desc'),
-                    "score": score,
-                    "matches": goods,
-                    "redFlags": bads,
-                    "source": "global"
-                })
-            for job in _local_jobs:
-                score, goods, bads = score_job(job, _current_config)
-                if _is_blocked(job.get('url', '')):
-                    continue
-                all_jobs.append({
-                    "title": job.get('title'),
-                    "company": job.get('company'),
-                    "location": job.get('location'),
-                    "url": job.get('url'),
-                    "desc": job.get('desc'),
-                    "score": score,
-                    "matches": goods,
-                    "redFlags": bads,
-                    "source": "local"
-                })
-            body = json.dumps(all_jobs).encode('utf-8')
+        elif path == '/api/jobs':
+            _load_jobs_from_db()
+            body = json.dumps(_api_jobs()).encode('utf-8')
+            self._respond(200, body, 'application/json')
+        elif path == '/api/decisions':
+            status = parse_qs(urlparse(self.path).query).get('status', [None])[0]
+            if status not in ('applied', 'dismissed'):
+                status = None
+            body = json.dumps(db.get_decisions(status)).encode('utf-8')
             self._respond(200, body, 'application/json')
         else:
             self._respond(404, b'Not found')
 
     def do_POST(self):
-        if self.path == '/refresh':
+        path = urlparse(self.path).path
+
+        if path == '/refresh':
             _start_pipeline('all')
             self._respond(200, b'{"status":"ok"}', 'application/json')
-        elif self.path == '/api/keywords/add':
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else '{}'
+        elif path == '/api/keywords/add':
+            data = self._read_json()
             try:
-                data = json.loads(body)
                 kw_type = data.get('type', 'focus')
                 value = data.get('value', '')
                 if value:
@@ -313,11 +373,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
             self._respond(200, b'{"status":"ok"}', 'application/json')
-        elif self.path == '/api/keywords/delete':
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else '{}'
+        elif path == '/api/keywords/delete':
+            data = self._read_json()
             try:
-                data = json.loads(body)
                 kw_type = data.get('type', 'focus')
                 values = data.get('values', [])
                 if values:
@@ -325,14 +383,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
             self._respond(200, b'{"status":"ok"}', 'application/json')
-        elif self.path == '/run':
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else '{}'
-            try:
-                data = json.loads(body)
-                mode = data.get('mode', 'all')
-            except Exception:
-                mode = 'all'
+        elif path == '/api/decisions':
+            data = self._read_json()
+            key = str(data.get('key') or '').strip()[:500]
+            status = data.get('status')
+            if not key or status not in ('applied', 'dismissed'):
+                self._respond(400, b'{"error":"invalid decision"}', 'application/json')
+                return
+            reason = str(data.get('reason') or '').strip()
+            note = str(data.get('note') or '').strip()
+            job = data.get('job') if isinstance(data.get('job'), dict) else {}
+            ok = db.set_decision(key, status, reason, note, job)
+            if not ok:
+                self._respond(500, b'{"error":"could not save decision"}', 'application/json')
+                return
+            payload = {'status': 'ok'}
+            payload.update(_decision_counts())
+            self._respond(200, json.dumps(payload).encode('utf-8'), 'application/json')
+        elif path == '/api/decisions/delete':
+            data = self._read_json()
+            key = str(data.get('key') or '').strip()[:500]
+            ok = db.delete_decision(key) if key else True
+            if not ok:
+                self._respond(500, b'{"error":"could not delete decision"}', 'application/json')
+                return
+            payload = {'status': 'ok'}
+            payload.update(_decision_counts())
+            self._respond(200, json.dumps(payload).encode('utf-8'), 'application/json')
+        elif path == '/run':
+            data = self._read_json()
+            mode = data.get('mode', 'all')
             _start_pipeline(mode)
             self._respond(200, b'{"status":"ok"}', 'application/json')
         else:
@@ -364,8 +444,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
-    build_dashboard(remote_jobs=[], local_leads=[], config=_current_config)
-    
+    _load_jobs_from_db()
+    _build_dashboard()
+
     server = HTTPServer(('', PORT), DashboardHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

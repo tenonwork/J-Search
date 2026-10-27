@@ -66,6 +66,32 @@ def _is_blocked(url: str) -> bool:
         return False
 
 
+def job_key(url, title='', company='', location=''):
+    """Stable identity for a posting across scrapes.
+
+    jobs.id is not stable because save_jobs() uses INSERT OR REPLACE, so
+    decisions are keyed on this value instead. Scheme, query string, fragment
+    and a leading www. are ignored; URL-less jobs fall back to their details.
+    """
+    url = (url or '').strip()
+    try:
+        parsed = urlparse(url)
+        host = parsed.netloc.lower()
+        if host.startswith('www.'):
+            host = host[4:]
+        scheme = parsed.scheme.lower()
+        if scheme in ('http', 'https') and host:
+            normalized = (host + parsed.path).lower().rstrip('/')
+        else:
+            normalized = ''
+    except Exception:
+        normalized = ''
+
+    if not normalized:
+        normalized = f"{title or ''}|{company or ''}|{location or ''}".lower().strip()
+    return normalized or 'unknown'
+
+
 def score_job(job, config=None):
     if config is None:
         config = DEFAULT_SCORING_CONFIG
@@ -192,8 +218,22 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
     .score { font-size: 26px; font-weight: 700; }
     .score-label { font-size: 11px; color: #64748b; }
     .empty { text-align: center; padding: 60px 20px; color: #94a3b8; background: #fff; border-radius: 12px; font-size: 14px; }
-    .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px); background: #0f172a; color: #fff; padding: 12px 22px; border-radius: 9px; font-size: 13px; font-weight: 500; opacity: 0; transition: all 0.25s; z-index: 2000; }
+    .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px); background: #0f172a; color: #fff; padding: 12px 22px; border-radius: 9px; font-size: 13px; font-weight: 500; opacity: 0; transition: all 0.25s; z-index: 2000; display: flex; align-items: center; gap: 10px; }
     .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    .toast-action { background: #fff; color: #0f172a; border: none; border-radius: 6px; padding: 5px 10px; font-size: 12px; font-weight: 700; cursor: pointer; }
+    .tracker-links { display: flex; gap: 8px; flex-wrap: wrap; }
+    .tracker-links .btn { gap: 0; }
+    .card-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .btn-apply { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
+    .btn-apply:hover { background: #bbf7d0; }
+    .btn-dismiss { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+    .btn-dismiss:hover { background: #fee2e2; }
+    .modal-intro { margin: 0 0 14px 0; color: #475569; font-size: 13px; }
+    .reason-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+    .reason-item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: #f8fafc; border-radius: 7px; font-size: 13px; color: #0f172a; cursor: pointer; }
+    .reason-item input { width: 16px; height: 16px; cursor: pointer; }
+    textarea { width: 100%; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 13px; font-family: inherit; resize: vertical; }
+    textarea:focus { outline: 2px solid #bfdbfe; border-color: #2563eb; }
 </style>
 </head>
 <body>
@@ -206,6 +246,10 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
                 <button class="btn btn-primary" onclick="runScrapers('all')">Run All Scrapers</button>
                 <button class="btn btn-outline" onclick="runScrapers('global')">Run Global Only</button>
                 <button class="btn btn-outline" onclick="runScrapers('local')">Run Local Only</button>
+            </div>
+            <div class="tracker-links">
+                <a class="btn btn-outline" href="/applied">Applied (<span id="appliedCount">__APPLIED_COUNT__</span>)</a>
+                <a class="btn btn-outline" href="/hidden">Hidden (<span id="hiddenCount">__DISMISSED_COUNT__</span>)</a>
             </div>
         </div>
     </header>
@@ -289,15 +333,44 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
     </div>
 </div>
 
+<div id="decisionModal" class="modal">
+    <div class="modal-box">
+        <div class="modal-head">
+            <h3>Not for me</h3>
+            <button class="btn btn-outline btn-sm" onclick="closeDecisionModal()">Close</button>
+        </div>
+        <div class="modal-body">
+            <p class="modal-intro" id="decisionJobTitle"></p>
+            <div class="reason-list">
+                <label class="reason-item"><input type="radio" name="decisionReason" class="reason-radio" value="Too senior / leadership"> <span>Too senior / leadership</span></label>
+                <label class="reason-item"><input type="radio" name="decisionReason" class="reason-radio" value="Wrong tech stack"> <span>Wrong tech stack</span></label>
+                <label class="reason-item"><input type="radio" name="decisionReason" class="reason-radio" value="Not remote / location"> <span>Not remote / location</span></label>
+                <label class="reason-item"><input type="radio" name="decisionReason" class="reason-radio" value="Compensation too low"> <span>Compensation too low</span></label>
+                <label class="reason-item"><input type="radio" name="decisionReason" class="reason-radio" value="Company / industry"> <span>Company / industry</span></label>
+                <label class="reason-item"><input type="radio" name="decisionReason" class="reason-radio" value="Duplicate / stale"> <span>Duplicate / stale</span></label>
+                <label class="reason-item"><input type="radio" name="decisionReason" class="reason-radio" value="Other"> <span>Other</span></label>
+            </div>
+            <textarea id="decisionNote" rows="3" placeholder="Optional note (e.g. salary too low, on-site only)"></textarea>
+        </div>
+        <div class="modal-foot">
+            <button class="btn btn-outline" onclick="closeDecisionModal()">Cancel</button>
+            <button class="btn btn-danger" onclick="submitDismissal()">Hide job</button>
+        </div>
+    </div>
+</div>
+
 <div id="toast" class="toast"></div>
 
 <script>
-const ALL_JOBS = __JOBS_JSON__;
+let ALL_JOBS = __JOBS_JSON__;
 
 let filters = { focus: [], exclude: [] };
 let currentTab = 'global';
 let strictness = 'balanced';
 let manageType = 'focus';
+let pendingDismissJob = null;
+let lastDecision = null;
+let toastTimer = null;
 
 function escapeHtml(text) {
     const div = document.createElement('div');
@@ -305,11 +378,22 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-function toast(msg) {
+function toast(msg, actionLabel, actionFn) {
     const el = document.getElementById('toast');
-    el.textContent = msg;
+    el.innerHTML = '<span>' + escapeHtml(msg) + '</span>';
+    if (actionLabel && actionFn) {
+        const btn = document.createElement('button');
+        btn.className = 'toast-action';
+        btn.textContent = actionLabel;
+        btn.addEventListener('click', () => {
+            el.classList.remove('show');
+            actionFn();
+        });
+        el.appendChild(btn);
+    }
     el.classList.add('show');
-    setTimeout(() => el.classList.remove('show'), 2200);
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), actionLabel ? 6000 : 2200);
 }
 
 async function api(path, method, body) {
@@ -413,6 +497,90 @@ async function deleteSelectedKeywords() {
     }
 }
 
+function updateCounts(data) {
+    if (!data) return;
+    if (typeof data.applied_count === 'number') {
+        document.getElementById('appliedCount').textContent = data.applied_count;
+    }
+    if (typeof data.dismissed_count === 'number') {
+        document.getElementById('hiddenCount').textContent = data.dismissed_count;
+    }
+}
+
+async function decide(job, status, reason, note) {
+    try {
+        const data = await api('/api/decisions', 'POST', {
+            key: job.key,
+            status: status,
+            reason: reason || '',
+            note: note || '',
+            job: {
+                title: job.title,
+                company: job.company,
+                location: job.location,
+                url: job.url,
+                source: job.source,
+                score: job.score
+            }
+        });
+        ALL_JOBS = ALL_JOBS.filter(j => j.key !== job.key);
+        lastDecision = { job: job, status: status };
+        renderResults();
+        updateCounts(data);
+        toast(status === 'applied' ? 'Marked as applied' : 'Hidden from results', 'Undo', undoLastDecision);
+    } catch (e) {
+        toast('Could not save that decision');
+        renderResults();
+    }
+}
+
+async function undoLastDecision() {
+    if (!lastDecision) return;
+    const job = lastDecision.job;
+    lastDecision = null;
+    try {
+        const data = await api('/api/decisions/delete', 'POST', { key: job.key });
+        if (!ALL_JOBS.some(j => j.key === job.key)) {
+            ALL_JOBS.push(job);
+        }
+        renderResults();
+        updateCounts(data);
+        toast('Restored to results');
+    } catch (e) {
+        toast('Could not undo');
+    }
+}
+
+function openDecisionModal(job) {
+    pendingDismissJob = job;
+    document.getElementById('decisionJobTitle').textContent = job.title + ' - ' + job.company;
+    document.querySelectorAll('.reason-radio').forEach(r => { r.checked = false; });
+    document.getElementById('decisionNote').value = '';
+    document.getElementById('decisionModal').classList.add('active');
+}
+
+function closeDecisionModal() {
+    document.getElementById('decisionModal').classList.remove('active');
+    pendingDismissJob = null;
+}
+
+async function submitDismissal() {
+    const selected = document.querySelector('.reason-radio:checked');
+    if (!selected) {
+        toast('Pick a reason first');
+        return;
+    }
+    const job = pendingDismissJob;
+    if (!job) {
+        closeDecisionModal();
+        return;
+    }
+    const reason = selected.value;
+    const note = document.getElementById('decisionNote').value.trim();
+    closeDecisionModal();
+    await decide(job, 'dismissed', reason, note);
+}
+
 function runScrapers(mode) {
     window.location.href = '/run?mode=' + mode;
 }
@@ -486,12 +654,17 @@ function renderResults() {
         const bad = (job.redFlags || []).map(m => '<span class="badge badge-bad">' + escapeHtml(m) + '</span>').join('');
         const focusBadge = isFocused(job) ? '<span class="badge badge-focus">focus match</span>' : '';
         const focusClass = isFocused(job) ? ' focused' : '';
+        const keyAttr = encodeURIComponent(job.key || '');
         return '<div class="card' + focusClass + '">' +
             '<div class="card-main">' +
                 '<h3 class="card-title">' + escapeHtml(job.title) + '</h3>' +
                 '<div class="card-meta">' + escapeHtml(job.company) + ' &bull; ' + escapeHtml(job.location) + '</div>' +
                 '<div class="badges">' + focusBadge + good + bad + '</div>' +
-                '<a href="' + escapeHtml(job.url) + '" target="_blank" rel="noopener noreferrer" class="btn btn-primary">Review Entry &rarr;</a>' +
+                '<div class="card-actions">' +
+                    '<a href="' + escapeHtml(job.url) + '" target="_blank" rel="noopener noreferrer" class="btn btn-primary">Review Entry &rarr;</a>' +
+                    '<button class="btn btn-apply" data-decision="applied" data-key="' + keyAttr + '">&#10003; Applied</button>' +
+                    '<button class="btn btn-dismiss" data-decision="dismissed" data-key="' + keyAttr + '">&#10005; Not for me</button>' +
+                '</div>' +
             '</div>' +
             '<div class="score-box">' +
                 '<div class="score" style="color: ' + scoreColor(job.score) + '">' + job.score + '</div>' +
@@ -514,26 +687,51 @@ document.addEventListener('click', function (e) {
     }
 });
 
+document.addEventListener('click', function (e) {
+    const voteBtn = e.target.closest('[data-decision]');
+    if (!voteBtn) return;
+    const key = decodeURIComponent(voteBtn.dataset.key || '');
+    const job = ALL_JOBS.find(j => j.key === key);
+    if (!job) return;
+    if (voteBtn.dataset.decision === 'applied') {
+        voteBtn.disabled = true;
+        decide(job, 'applied', '', '');
+    } else {
+        openDecisionModal(job);
+    }
+});
+
+document.getElementById('decisionModal').addEventListener('click', e => {
+    if (e.target.id === 'decisionModal') closeDecisionModal();
+});
+
 loadKeywords();
 </script>
 </body>
 </html>"""
 
 
-def build_dashboard(remote_jobs=None, local_leads=None, config=None):
+def build_dashboard(remote_jobs=None, local_leads=None, config=None,
+                    exclude_keys=None, applied_count=0, dismissed_count=0):
     remote_jobs = remote_jobs or []
     local_leads = local_leads or []
     if config is None:
         config = DEFAULT_SCORING_CONFIG
+    exclude_keys = set(exclude_keys or ())
 
     all_jobs_data = []
 
-    for job in remote_jobs:
+    def add_job(job, source):
         if _is_blocked(job.get('url', '')):
-            continue
+            return
+        key = job_key(job.get('url', ''), job.get('title', ''),
+                      job.get('company', ''), job.get('location', ''))
+        if key in exclude_keys:
+            return
         score, goods, bads = score_job(job, config)
         all_jobs_data.append({
             "id": len(all_jobs_data),
+            "key": key,
             "title": job.get('title', ''),
             "company": job.get('company', ''),
             "location": job.get('location', ''),
@@ -542,28 +740,19 @@ def build_dashboard(remote_jobs=None, local_leads=None, config=None):
             "score": score,
             "matches": goods,
             "redFlags": bads,
-            "source": "global",
+            "source": source,
         })
+
+    for job in remote_jobs:
+        add_job(job, "global")
 
     for job in local_leads:
-        if _is_blocked(job.get('url', '')):
-            continue
-        score, goods, bads = score_job(job, config)
-        all_jobs_data.append({
-            "id": len(all_jobs_data),
-            "title": job.get('title', ''),
-            "company": job.get('company', ''),
-            "location": job.get('location', ''),
-            "url": job.get('url', '#'),
-            "desc": job.get('desc', ''),
-            "score": score,
-            "matches": goods,
-            "redFlags": bads,
-            "source": "local",
-        })
+        add_job(job, "local")
 
     jobs_json = json.dumps(all_jobs_data).replace('</', '<\\/')
-    html_content = DASHBOARD_TEMPLATE.replace('__JOBS_JSON__', jobs_json)
+    html_content = DASHBOARD_TEMPLATE.replace('__APPLIED_COUNT__', str(applied_count))
+    html_content = html_content.replace('__DISMISSED_COUNT__', str(dismissed_count))
+    html_content = html_content.replace('__JOBS_JSON__', jobs_json)
 
     output_file = "dashboard.html"
     with open(output_file, "w", encoding="utf-8") as f:

@@ -8,20 +8,21 @@ Instead of deploying blind "spray-and-pray" auto-apply bots that trigger platfor
 
 As an independent developer who builds complete systems (and actively uses governed AI-assisted workflows), I built this to fix the inefficiencies of the modern tech job hunt.
 
-The pipeline is split into four decoupled layers:
+The pipeline is split into five decoupled layers:
 
 1. **Ingestion** — Parallel fetchers for global APIs/RSS and local Kenyan job boards. Each source fails independently, so one dead endpoint never empties the dashboard.
-2. **Normalisation & Deduplication** — Every source is mapped to one shape (`title`, `company`, `location`, `url`, `desc`), then deduplicated on a normalised URL (scheme + host + path, query stripped).
+2. **Normalisation & Deduplication** — Every source is mapped to one shape (`title`, `company`, `location`, `url`, `desc`), then deduplicated on a stable job key (host + path, query and `www.` stripped).
 3. **Calibration Engine** — Whole-word (`\b`) regex scoring with weighted keyword groups and a configurable dealbreaker penalty.
-4. **Presentation** — A single-page dashboard served over a local HTTP server. Scoring runs server-side; filtering, strictness and sorting run in the browser, so toggling a control changes the result count instantly.
+4. **Decision Filter** — Jobs marked as applied for or dismissed are excluded from the triage list. Raw postings stay in SQLite, so restoring a decision does not require a re-scrape.
+5. **Presentation** — A single-page dashboard served over a local HTTP server. Scoring runs server-side; filtering, strictness and sorting run in the browser, so toggling a control changes the result count instantly.
 
 ## Architecture & Core Stack
 
 ```text
 [Global sources]  ─┐
-                   ├─> [Normalise + Deduplicate] ─> [Scoring Engine] ─> [SQLite] ─> [dashboard.html]
-[Local sources]   ─┘                                                              │
-                                                          [Browser] <── HTTP ─────┘
+                   ├─> [Normalise + Deduplicate] ─> [Scoring Engine] ─> [SQLite] ─> [Decision Filter] ─> [dashboard.html]
+[Local sources]   ─┘                                                                                                    │
+                                                          [Browser] <── HTTP ───────────────────────────────────────────┘
 ```
 
 * **Language:** Python 3
@@ -83,6 +84,14 @@ Presets are applied in the browser by the strictness toggle; the server scores e
 * **Sort:** most recommended first, or least recommended first.
 * **Run controls:** Run All, Run Global Only, and Run Local Only.
 * **Full-page loading screen:** clicking a run button navigates to a dedicated loading page that polls `/status` and redirects to the dashboard only once the scrape has actually finished.
+* **Per-job decisions:** each card has `Applied` and `Not for me` buttons. Applied removes the posting from triage and logs it on the applied page; Not for me opens a reason picker (preset + optional note) and logs it on the hidden page. Both actions show an Undo toast.
+
+## Application Tracker
+
+* **`/applied`** — every job marked as applied for, newest first, with the score it had when you decided. Restore returns it to the dashboard.
+* **`/hidden`** — every dismissed job with its reason and note. Restore returns it to the dashboard.
+* Both pages are rendered from the `decisions` table, not from the in-memory scrape, so they survive restarts and source removals.
+* Decisions are applied when the dashboard and `/api/jobs` are built, not when jobs are saved. Raw postings remain archived, so Undo is instant.
 
 ## HTTP Routes
 
@@ -92,10 +101,15 @@ Presets are applied in the browser by the strictness toggle; the server scores e
 | `/run?mode=all\|global\|local` | GET | Start a scrape and serve the loading page |
 | `/status` | GET | `{"running": true\|false}` for the loading page |
 | `/refresh` | POST | Re-run all scrapers |
-| `/api/jobs` | GET | Scored jobs as JSON |
+| `/applied` | GET | Applied-jobs tracker page |
+| `/hidden` | GET | Dismissed-jobs tracker page |
+| `/api/jobs` | GET | Scored jobs as JSON, excluding applied/hidden postings |
 | `/api/keywords` | GET | Current focus/exclude keywords |
 | `/api/keywords/add` | POST | `{"type": "focus"\|"exclude", "value": "..."}` |
 | `/api/keywords/delete` | POST | `{"type": "...", "values": ["..."]}` |
+| `/api/decisions` | GET | Decisions as JSON; optional `?status=applied\|dismissed` |
+| `/api/decisions` | POST | `{"key": "...", "status": "applied"\|"dismissed", "reason": "...", "note": "...", "job": {...}}` |
+| `/api/decisions/delete` | POST | `{"key": "..."}` — restore a job to the dashboard |
 
 ## Database
 
@@ -105,8 +119,11 @@ Presets are applied in the browser by the strictness toggle; the server scores e
 | :-- | :-- |
 | `keywords` | `id`, `type` (`focus`/`exclude`), `value` — unique per type |
 | `jobs` | `id`, `title`, `company`, `location`, `url` (unique), `description`, `source`, `score`, `matches`, `redflags`, `fetched_at` |
+| `decisions` | `job_key` (primary key), `status` (`applied`/`dismissed`), `reason`, `note`, `title`, `company`, `location`, `url`, `source`, `score`, `applied_at`, `created_at`, `updated_at` |
 
 Default keywords are seeded the first time the database is created.
+
+Decision snapshots (title, company, score, etc.) are stored alongside the key, so the tracker pages do not depend on the `jobs` row still existing.
 
 ## Getting Started
 
@@ -121,7 +138,8 @@ pip install requests beautifulsoup4 feedparser
 ```text
 ├── run.py                     # HTTP server, pipeline orchestration, API routes
 ├── job_dashboard.py           # Scoring engine, presets, dashboard template
-├── db.py                      # SQLite layer (keywords + jobs)
+├── applied_page.py            # Applied and hidden tracker page templates
+├── db.py                      # SQLite layer (keywords, jobs, decisions)
 ├── fetch_live_jobs.py         # Global API sources
 ├── fetch_rss_jobs.py          # Global RSS feeds
 ├── fetch_local_merchants.py   # Local Kenyan board scrapers
@@ -136,13 +154,15 @@ pip install requests beautifulsoup4 feedparser
 python run.py
 ```
 
-The server starts on `http://localhost:8765` and opens your default browser. Pick your keywords, then use a run button to scrape. Results are stored in SQLite, so restarting the server does not lose them.
+The server starts on `http://localhost:8765` and opens your default browser. Pick your keywords, then use a run button to scrape. Results and your applied/hidden decisions are stored in SQLite, so restarting the server does not lose them.
 
 ## Known Limitations
 
 * Several public job APIs are intermittently blocked or rate-limited depending on network; the fetchers degrade gracefully but the Global count will vary between runs.
 * DuckDuckGo search scraping now often returns a bot-challenge page (HTTP 202). It is treated as an optional source, never a required one.
 * HTML scrapers depend on BrighterMonday/JobsInKenya markup and will need selector updates if those sites redesign.
+* Job identity is the normalised URL (host + path). A reposted job with a new slug/URL will reappear, the same role listed on two sources with different URLs is treated as two jobs, and boards that put the job ID only in query parameters can collide.
+* Decisions live in `jsearch.db`; deleting the database deletes the application history.
 * Everything is single-user and local. There is no authentication and the server binds to all interfaces on port 8765.
 
 ## Roadmap
@@ -151,4 +171,6 @@ The server starts on `http://localhost:8765` and opens your default browser. Pic
 - [ ] **Saved searches / history:** keep past result sets to compare listings across runs.
 - [ ] **AI-assisted summaries:** optional local LLM pass, behind a review gate, to condense long descriptions into three bullet points on each card.
 - [ ] **Export to CSV/Markdown:** write top-tier matches to a tracking document.
-- [ ] **Application tracker:** mark listings as applied / rejected / follow-up.
+- [x] **Application tracker:** applied and dismissed states with reasons, plus `/applied` and `/hidden` pages.
+- [ ] **Interview pipeline:** rejected / interviewing / offer states and follow-up dates.
+- [ ] **Reason analytics:** rejection-reason counts on the hidden page.

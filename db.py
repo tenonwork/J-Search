@@ -1,5 +1,6 @@
 import sqlite3
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 DB_PATH = Path('jsearch.db')
@@ -38,6 +39,22 @@ def init_db():
         redflags TEXT,
         fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS decisions(
+        job_key TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        reason TEXT NOT NULL DEFAULT '',
+        note TEXT NOT NULL DEFAULT '',
+        title TEXT NOT NULL DEFAULT '',
+        company TEXT NOT NULL DEFAULT '',
+        location TEXT NOT NULL DEFAULT '',
+        url TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT '',
+        score INTEGER NOT NULL DEFAULT 0,
+        applied_at TEXT,
+        created_at TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL DEFAULT ''
+    )''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status)')
     conn.commit()
 
     # Seed defaults on a brand new database
@@ -137,3 +154,161 @@ def get_jobs(source=None):
             'redFlags': json.loads(r['redflags'] or '[]')
         })
     return result
+
+
+# ---------------------------------------------------------------------------
+# Decisions: jobs marked as applied for or dismissed.
+# ---------------------------------------------------------------------------
+
+DECISION_STATUSES = ('applied', 'dismissed')
+
+
+def _now_iso():
+    return datetime.now(timezone.utc).isoformat(timespec='seconds')
+
+
+def _decision_row(r):
+    return {
+        'job_key': r['job_key'],
+        'status': r['status'],
+        'reason': r['reason'] or '',
+        'note': r['note'] or '',
+        'title': r['title'] or '',
+        'company': r['company'] or '',
+        'location': r['location'] or '',
+        'url': r['url'] or '',
+        'source': r['source'] or '',
+        'score': r['score'] if r['score'] is not None else 0,
+        'applied_at': r['applied_at'] or '',
+        'created_at': r['created_at'] or '',
+        'updated_at': r['updated_at'] or '',
+    }
+
+
+def set_decision(job_key, status, reason='', note='', snapshot=None):
+    """Create or update the decision for a job.
+
+    `snapshot` is the job dict shown in the UI. Copying its display fields here
+    keeps the applied/hidden pages working even if the jobs table is refreshed.
+    """
+    if not job_key or status not in DECISION_STATUSES:
+        return False
+
+    init_db()
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    conn = get_conn()
+    c = conn.cursor()
+    try:
+        c.execute('SELECT status, applied_at, created_at FROM decisions WHERE job_key=?', (job_key,))
+        existing = c.fetchone()
+        now = _now_iso()
+
+        if existing:
+            prev_status = existing['status']
+            prev_applied_at = existing['applied_at']
+            created_at = existing['created_at'] or now
+            if status == 'applied':
+                applied_at = prev_applied_at if prev_status == 'applied' and prev_applied_at else now
+            else:
+                applied_at = None
+        else:
+            created_at = now
+            applied_at = now if status == 'applied' else None
+
+        def text(value, limit):
+            return str(value or '')[:limit]
+
+        try:
+            score = int(snapshot.get('score') or 0)
+        except (TypeError, ValueError):
+            score = 0
+
+        c.execute('''INSERT INTO decisions(
+                job_key, status, reason, note, title, company, location, url, source,
+                score, applied_at, created_at, updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(job_key) DO UPDATE SET
+                status=excluded.status,
+                reason=excluded.reason,
+                note=excluded.note,
+                title=excluded.title,
+                company=excluded.company,
+                location=excluded.location,
+                url=excluded.url,
+                source=excluded.source,
+                score=excluded.score,
+                applied_at=excluded.applied_at,
+                updated_at=excluded.updated_at''',
+            (job_key, status, text(reason, 200), text(note, 1000),
+             text(snapshot.get('title'), 300), text(snapshot.get('company'), 300),
+             text(snapshot.get('location'), 300), text(snapshot.get('url'), 1000),
+             text(snapshot.get('source'), 50), score, applied_at, created_at, now))
+        conn.commit()
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def delete_decision(job_key):
+    init_db()
+    conn = get_conn()
+    c = conn.cursor()
+    try:
+        c.execute('DELETE FROM decisions WHERE job_key=?', (job_key,))
+        conn.commit()
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def get_decisions(status=None):
+    init_db()
+    conn = get_conn()
+    c = conn.cursor()
+    if status == 'applied':
+        c.execute('SELECT * FROM decisions WHERE status=? ORDER BY applied_at DESC, updated_at DESC', (status,))
+    elif status == 'dismissed':
+        c.execute('SELECT * FROM decisions WHERE status=? ORDER BY updated_at DESC', (status,))
+    else:
+        c.execute('SELECT * FROM decisions ORDER BY updated_at DESC')
+    rows = c.fetchall()
+    conn.close()
+    return [_decision_row(r) for r in rows]
+
+
+def get_decision(job_key):
+    init_db()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute('SELECT * FROM decisions WHERE job_key=?', (job_key,))
+    row = c.fetchone()
+    conn.close()
+    return _decision_row(row) if row else None
+
+
+def get_decision_keys():
+    init_db()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute('SELECT job_key FROM decisions')
+    rows = c.fetchall()
+    conn.close()
+    return {r['job_key'] for r in rows}
+
+
+def get_decision_counts():
+    init_db()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute('SELECT status, COUNT(*) AS n FROM decisions GROUP BY status')
+    rows = c.fetchall()
+    conn.close()
+    counts = {'applied': 0, 'dismissed': 0}
+    for r in rows:
+        if r['status'] in counts:
+            counts[r['status']] = r['n']
+    return counts
