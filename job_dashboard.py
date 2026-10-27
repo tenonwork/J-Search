@@ -175,17 +175,23 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
     .kw-tag.exclude { background: #fef2f2; color: #991b1b; }
     .kw-tag .x { cursor: pointer; font-weight: 700; font-size: 15px; line-height: 1; padding: 0 2px; opacity: 0.6; }
     .kw-tag .x:hover { opacity: 1; }
+    .kw-tag.paused { background: #f1f5f9; color: #64748b; opacity: 0.7; }
+    .kw-paused { font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; background: #e2e8f0; color: #475569; padding: 2px 5px; border-radius: 4px; font-weight: 700; }
+    .kw-note { color: #64748b; font-size: 12px; margin: -6px 0 14px 0; }
     .kw-empty { color: #94a3b8; font-size: 13px; font-style: italic; }
     .kw-input-row { display: flex; gap: 8px; }
     .kw-input-row input { flex: 1; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 13px; font-family: inherit; }
     .kw-input-row input:focus { outline: 2px solid #bfdbfe; border-color: #2563eb; }
     .modal { display: none; position: fixed; inset: 0; background: rgba(15,23,42,0.55); z-index: 1000; align-items: center; justify-content: center; }
     .modal.active { display: flex; }
+    .modal.confirm-modal { z-index: 1100; }
     .modal-box { background: #fff; border-radius: 12px; width: 90%; max-width: 480px; max-height: 80vh; display: flex; flex-direction: column; }
     .modal-head { padding: 18px 24px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; }
     .modal-head h3 { margin: 0; font-size: 17px; color: #0f172a; }
     .modal-body { padding: 20px 24px; overflow-y: auto; }
     .modal-foot { padding: 14px 24px; border-top: 1px solid #e2e8f0; display: flex; gap: 8px; justify-content: flex-end; }
+    .modal-sm { max-width: 400px; }
+    .confirm-warning { margin: 0; color: #991b1b; font-size: 13px; font-weight: 600; }
     .bulk-actions { display: flex; gap: 8px; margin-bottom: 14px; }
     .cb-list { display: flex; flex-direction: column; gap: 8px; }
     .cb-item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: #f8fafc; border-radius: 7px; font-size: 13px; color: #0f172a; cursor: pointer; }
@@ -259,22 +265,23 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
             <h3>Keywords &amp; Preferences</h3>
             <span class="count" id="kwStatus">loading...</span>
         </div>
+        <p class="kw-note">Scrapers fetch a broad set of jobs. These keywords only change what is shown here, not what is fetched.</p>
 
         <div class="kw-section">
-            <h4>Focus keywords &mdash; jobs containing these are highlighted</h4>
+            <h4>Highlight keywords &mdash; matching jobs get a blue outline</h4>
             <div class="kw-list" id="focusList"></div>
             <div class="kw-input-row">
-                <input type="text" id="focusInput" placeholder="Add a focus keyword, e.g. react">
+                <input type="text" id="focusInput" placeholder="Add a highlight keyword, e.g. react">
                 <button class="btn btn-primary btn-sm" onclick="addKeyword('focus')">+ Add</button>
                 <button class="btn btn-outline btn-sm" onclick="openKeywordManager('focus')">Manage</button>
             </div>
         </div>
 
         <div class="kw-section">
-            <h4>Exclude keywords &mdash; jobs containing these are hidden</h4>
+            <h4>Hide keywords &mdash; matching jobs disappear from results</h4>
             <div class="kw-list" id="excludeList"></div>
             <div class="kw-input-row">
-                <input type="text" id="excludeInput" placeholder="Add an exclude keyword, e.g. senior">
+                <input type="text" id="excludeInput" placeholder="Add a hide keyword, e.g. senior">
                 <button class="btn btn-primary btn-sm" onclick="addKeyword('exclude')">+ Add</button>
                 <button class="btn btn-outline btn-sm" onclick="openKeywordManager('exclude')">Manage</button>
             </div>
@@ -320,15 +327,33 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
             <button class="btn btn-outline btn-sm" onclick="closeKeywordManager()">Close</button>
         </div>
         <div class="modal-body">
+            <p class="modal-intro" id="keywordModalIntro"></p>
             <div class="bulk-actions">
-                <button class="btn btn-outline btn-sm" onclick="selectAllKeywords(true)">Select all</button>
-                <button class="btn btn-outline btn-sm" onclick="selectAllKeywords(false)">Select none</button>
+                <button class="btn btn-outline btn-sm" onclick="selectAllKeywords(true)">Enable all</button>
+                <button class="btn btn-outline btn-sm" onclick="selectAllKeywords(false)">Disable all</button>
             </div>
             <div class="cb-list" id="keywordCheckboxList"></div>
         </div>
         <div class="modal-foot">
             <button class="btn btn-outline" onclick="closeKeywordManager()">Cancel</button>
-            <button class="btn btn-danger" onclick="deleteSelectedKeywords()">Delete selected</button>
+            <button class="btn btn-primary" onclick="saveKeywordStates()">Save changes</button>
+        </div>
+    </div>
+</div>
+
+<div id="confirmKeywordModal" class="modal confirm-modal">
+    <div class="modal-box modal-sm">
+        <div class="modal-head">
+            <h3>Delete keyword?</h3>
+            <button class="btn btn-outline btn-sm" onclick="closeConfirmKeyword()">Close</button>
+        </div>
+        <div class="modal-body">
+            <p class="modal-intro" id="confirmKeywordText"></p>
+            <p class="confirm-warning">This cannot be undone.</p>
+        </div>
+        <div class="modal-foot">
+            <button class="btn btn-outline" onclick="closeConfirmKeyword()">Cancel</button>
+            <button class="btn btn-danger" onclick="confirmDeleteKeyword()">Delete keyword</button>
         </div>
     </div>
 </div>
@@ -368,6 +393,7 @@ let filters = { focus: [], exclude: [] };
 let currentTab = 'global';
 let strictness = 'balanced';
 let manageType = 'focus';
+let pendingKeywordDelete = null;
 let pendingDismissJob = null;
 let lastDecision = null;
 let toastTimer = null;
@@ -409,7 +435,13 @@ async function loadKeywords() {
         const data = await api('/api/keywords');
         filters.focus = data.focus || [];
         filters.exclude = data.exclude || [];
-        document.getElementById('kwStatus').textContent = 'saved to database';
+        const activeFocus = filters.focus.filter(k => k.enabled).length;
+        const activeExclude = filters.exclude.filter(k => k.enabled).length;
+        const paused = filters.focus.filter(k => !k.enabled).length +
+            filters.exclude.filter(k => !k.enabled).length;
+        let status = activeFocus + ' highlight / ' + activeExclude + ' hide active';
+        if (paused) status += ' (' + paused + ' paused)';
+        document.getElementById('kwStatus').textContent = status;
     } catch (e) {
         document.getElementById('kwStatus').textContent = 'offline';
     }
@@ -421,19 +453,22 @@ function renderKeywordLists() {
     const focusEl = document.getElementById('focusList');
     const excludeEl = document.getElementById('excludeList');
 
-    function tagHtml(type, k, extraClass) {
-        return '<span class="kw-tag' + extraClass + '">' + escapeHtml(k) +
-            ' <span class="x" title="Remove" data-type="' + type +
-            '" data-value="' + encodeURIComponent(k) + '">&times;</span></span>';
+    function tagHtml(type, item, extraClass) {
+        const paused = item.enabled ? '' : ' paused';
+        const pausedBadge = item.enabled ? '' : '<span class="kw-paused">paused</span>';
+        return '<span class="kw-tag' + extraClass + paused + '">' + escapeHtml(item.value) +
+            pausedBadge +
+            ' <span class="x" title="Delete keyword" data-type="' + type +
+            '" data-value="' + encodeURIComponent(item.value) + '">&times;</span></span>';
     }
 
     focusEl.innerHTML = filters.focus.length
         ? filters.focus.map(k => tagHtml('focus', k, '')).join('')
-        : '<span class="kw-empty">No focus keywords yet</span>';
+        : '<span class="kw-empty">No highlight keywords yet</span>';
 
     excludeEl.innerHTML = filters.exclude.length
         ? filters.exclude.map(k => tagHtml('exclude', k, ' exclude')).join('')
-        : '<span class="kw-empty">No exclude keywords yet</span>';
+        : '<span class="kw-empty">No hide keywords yet</span>';
 }
 
 async function addKeyword(type) {
@@ -450,27 +485,48 @@ async function addKeyword(type) {
     }
 }
 
-async function removeKeyword(type, value) {
+function openDeleteKeyword(type, value) {
+    pendingKeywordDelete = { type: type, value: value };
+    const label = type === 'focus' ? 'highlight' : 'hide';
+    document.getElementById('confirmKeywordText').textContent =
+        'Delete "' + value + '" from your ' + label + ' keywords?';
+    document.getElementById('confirmKeywordModal').classList.add('active');
+}
+
+function closeConfirmKeyword() {
+    document.getElementById('confirmKeywordModal').classList.remove('active');
+    pendingKeywordDelete = null;
+}
+
+async function confirmDeleteKeyword() {
+    if (!pendingKeywordDelete) return;
+    const pending = pendingKeywordDelete;
+    pendingKeywordDelete = null;
+    document.getElementById('confirmKeywordModal').classList.remove('active');
     try {
-        await api('/api/keywords/delete', 'POST', { type: type, values: [value] });
+        await api('/api/keywords/delete', 'POST', { type: pending.type, values: [pending.value] });
         await loadKeywords();
-        toast('Removed "' + value + '"');
+        toast('Deleted "' + pending.value + '"');
     } catch (e) {
-        toast('Could not remove keyword');
+        toast('Could not delete keyword');
     }
 }
 
 function openKeywordManager(type) {
     manageType = type;
-    document.getElementById('modalTitle').textContent =
-        type === 'focus' ? 'Manage focus keywords' : 'Manage exclude keywords';
+    const label = type === 'focus' ? 'highlight' : 'hide';
+    document.getElementById('modalTitle').textContent = 'Manage ' + label + ' keywords';
+    document.getElementById('keywordModalIntro').textContent =
+        'Uncheck a keyword to pause it. Paused keywords stay saved and can be re-enabled. ' +
+        'Use the x on a tag to delete it permanently.';
     const list = document.getElementById('keywordCheckboxList');
     if (!filters[type].length) {
         list.innerHTML = '<p class="kw-empty">No keywords to manage</p>';
     } else {
-        list.innerHTML = filters[type].map(k =>
+        list.innerHTML = filters[type].map(item =>
             '<label class="cb-item"><input type="checkbox" class="kw-checkbox" value="' +
-            escapeHtml(k).replace(/"/g, '&quot;') + '" checked><span>' + escapeHtml(k) + '</span></label>'
+            escapeHtml(item.value).replace(/"/g, '&quot;') + '"' +
+            (item.enabled ? ' checked' : '') + '><span>' + escapeHtml(item.value) + '</span></label>'
         ).join('');
     }
     document.getElementById('keywordModal').classList.add('active');
@@ -484,16 +540,22 @@ function selectAllKeywords(state) {
     document.querySelectorAll('.kw-checkbox').forEach(cb => { cb.checked = state; });
 }
 
-async function deleteSelectedKeywords() {
-    const values = Array.from(document.querySelectorAll('.kw-checkbox:checked')).map(cb => cb.value);
-    if (!values.length) { closeKeywordManager(); return; }
+async function saveKeywordStates() {
+    const states = {};
+    document.querySelectorAll('.kw-checkbox').forEach(cb => {
+        states[cb.value] = cb.checked;
+    });
+    if (!Object.keys(states).length) {
+        closeKeywordManager();
+        return;
+    }
     try {
-        await api('/api/keywords/delete', 'POST', { type: manageType, values: values });
+        await api('/api/keywords/state', 'POST', { type: manageType, states: states });
         closeKeywordManager();
         await loadKeywords();
-        toast('Deleted ' + values.length + ' keyword' + (values.length === 1 ? '' : 's'));
+        toast('Keyword settings saved');
     } catch (e) {
-        toast('Could not delete keywords');
+        toast('Could not save keyword settings');
     }
 }
 
@@ -607,10 +669,14 @@ function scoreColor(score) {
     return '#dc2626';
 }
 
+function enabledKeywordValues(type) {
+    return filters[type].filter(k => k.enabled).map(k => k.value);
+}
+
 function passesFilters(job) {
     const text = ((job.title || '') + ' ' + (job.desc || '')).toLowerCase();
 
-    for (const ex of filters.exclude) {
+    for (const ex of enabledKeywordValues('exclude')) {
         if (ex && text.includes(ex)) return false;
     }
 
@@ -628,7 +694,7 @@ function passesFilters(job) {
 
 function isFocused(job) {
     const text = ((job.title || '') + ' ' + (job.desc || '')).toLowerCase();
-    return filters.focus.some(k => k && text.includes(k));
+    return enabledKeywordValues('focus').some(k => k && text.includes(k));
 }
 
 function renderResults() {
@@ -683,8 +749,12 @@ document.getElementById('keywordModal').addEventListener('click', e => {
 document.addEventListener('click', function (e) {
     const x = e.target.closest('.kw-tag .x');
     if (x) {
-        removeKeyword(x.dataset.type, decodeURIComponent(x.dataset.value));
+        openDeleteKeyword(x.dataset.type, decodeURIComponent(x.dataset.value));
     }
+});
+
+document.getElementById('confirmKeywordModal').addEventListener('click', e => {
+    if (e.target.id === 'confirmKeywordModal') closeConfirmKeyword();
 });
 
 document.addEventListener('click', function (e) {

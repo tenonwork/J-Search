@@ -79,7 +79,8 @@ Presets are applied in the browser by the strictness toggle; the server scores e
 ## Dashboard
 
 * **Two tabs:** Global and Local — each with its own result count.
-* **Keyword manager:** Focus keywords (highlight matching cards) and Exclude keywords (hide matching cards), with add, remove and a bulk-select modal (Select all / Select none / Delete selected). Persisted in SQLite.
+* **Keyword manager:** Highlight keywords (blue outline on matching cards) and Hide keywords (remove matching cards), with add, pause/enable, and delete. The Manage modal has a `Save changes` button; unchecking a keyword pauses it without deleting it. Permanent deletion happens from the `x` on a tag and requires confirmation. Persisted in SQLite.
+* **Broad-fetch filtering:** Scrapers always fetch a wide set of postings. Keywords only change what the dashboard shows, not what is fetched or how jobs are scored.
 * **Strictness toggle:** Strict / Balanced / Lenient.
 * **Sort:** most recommended first, or least recommended first.
 * **Run controls:** Run All, Run Global Only, and Run Local Only.
@@ -104,8 +105,9 @@ Presets are applied in the browser by the strictness toggle; the server scores e
 | `/applied` | GET | Applied-jobs tracker page |
 | `/hidden` | GET | Dismissed-jobs tracker page |
 | `/api/jobs` | GET | Scored jobs as JSON, excluding applied/hidden postings |
-| `/api/keywords` | GET | Current focus/exclude keywords |
+| `/api/keywords` | GET | Current highlight/hide keywords with enabled state |
 | `/api/keywords/add` | POST | `{"type": "focus"\|"exclude", "value": "..."}` |
+| `/api/keywords/state` | POST | `{"type": "...", "states": {"keyword": true\|false}}` — pause/enable without deleting |
 | `/api/keywords/delete` | POST | `{"type": "...", "values": ["..."]}` |
 | `/api/decisions` | GET | Decisions as JSON; optional `?status=applied\|dismissed` |
 | `/api/decisions` | POST | `{"key": "...", "status": "applied"\|"dismissed", "reason": "...", "note": "...", "job": {...}}` |
@@ -117,7 +119,7 @@ Presets are applied in the browser by the strictness toggle; the server scores e
 
 | Table | Columns |
 | :-- | :-- |
-| `keywords` | `id`, `type` (`focus`/`exclude`), `value` — unique per type |
+| `keywords` | `id`, `type` (`focus`/`exclude`), `value`, `enabled` (1 = active, 0 = paused) — unique per type |
 | `jobs` | `id`, `title`, `company`, `location`, `url` (unique), `description`, `source`, `score`, `matches`, `redflags`, `fetched_at` |
 | `decisions` | `job_key` (primary key), `status` (`applied`/`dismissed`), `reason`, `note`, `title`, `company`, `location`, `url`, `source`, `score`, `applied_at`, `created_at`, `updated_at` |
 
@@ -163,11 +165,13 @@ The server starts on `http://localhost:8765` and opens your default browser. Pic
 * HTML scrapers depend on BrighterMonday/JobsInKenya markup and will need selector updates if those sites redesign.
 * Job identity is the normalised URL (host + path). A reposted job with a new slug/URL will reappear, the same role listed on two sources with different URLs is treated as two jobs, and boards that put the job ID only in query parameters can collide.
 * Decisions live in `jsearch.db`; deleting the database deletes the application history.
+* Keyword changes affect visibility only. The scoring profile (core skills, AI skills, weights, dealbreakers) is built in and is not edited by the keyword manager.
 * Everything is single-user and local. There is no authentication and the server binds to all interfaces on port 8765.
 
 ## Roadmap
 
-- [ ] **Keyword-driven queries:** feed focus keywords into DuckDuckGo/BrighterMonday search URLs so filters shape the scrape, not just the view.
+- [ ] **Keyword-driven queries:** feed highlight keywords into DuckDuckGo/BrighterMonday search URLs so filters shape the scrape, not just the view.
+- [ ] **Editable scoring profile:** move core/AI skill weights and dealbreakers into the UI so ranking can be tuned without editing Python.
 - [ ] **Saved searches / history:** keep past result sets to compare listings across runs.
 - [ ] **AI-assisted summaries:** optional local LLM pass, behind a review gate, to condense long descriptions into three bullet points on each card.
 - [ ] **Export to CSV/Markdown:** write top-tier matches to a tracking document.

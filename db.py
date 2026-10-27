@@ -24,8 +24,12 @@ def init_db():
         id INTEGER PRIMARY KEY,
         type TEXT NOT NULL,
         value TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
         UNIQUE(type, value)
     )''')
+    keyword_cols = {row['name'] for row in c.execute('PRAGMA table_info(keywords)').fetchall()}
+    if 'enabled' not in keyword_cols:
+        c.execute('ALTER TABLE keywords ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1')
     c.execute('''CREATE TABLE IF NOT EXISTS jobs(
         id INTEGER PRIMARY KEY,
         title TEXT,
@@ -72,25 +76,54 @@ def get_keywords():
     init_db()
     conn = get_conn()
     c = conn.cursor()
-    c.execute('SELECT type, value FROM keywords ORDER BY value')
+    c.execute('SELECT type, value, enabled FROM keywords ORDER BY value')
     rows = c.fetchall()
     conn.close()
     result = {'focus': [], 'exclude': []}
     for r in rows:
         if r['type'] in result:
-            result[r['type']].append(r['value'])
+            result[r['type']].append({
+                'value': r['value'],
+                'enabled': bool(r['enabled']),
+            })
     return result
 
 
 def add_keyword(kw_type, value):
     init_db()
+    if kw_type not in ('focus', 'exclude'):
+        return False
     value = (value or '').lower().strip()
     if not value:
         return False
     conn = get_conn()
     c = conn.cursor()
     try:
-        c.execute('INSERT OR IGNORE INTO keywords(type, value) VALUES(?, ?)', (kw_type, value))
+        c.execute('''INSERT INTO keywords(type, value, enabled) VALUES(?, ?, 1)
+            ON CONFLICT(type, value) DO UPDATE SET enabled=1''', (kw_type, value))
+        conn.commit()
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def set_keyword_states(kw_type, states):
+    """Persist which keywords are active.
+
+    `states` maps keyword value -> bool. Disabled keywords stay in the table so
+    they can be re-enabled later; they are not deleted.
+    """
+    if kw_type not in ('focus', 'exclude') or not isinstance(states, dict):
+        return False
+    init_db()
+    conn = get_conn()
+    c = conn.cursor()
+    try:
+        for value, enabled in states.items():
+            c.execute('UPDATE keywords SET enabled=? WHERE type=? AND value=?',
+                      (1 if enabled else 0, kw_type, (value or '').lower().strip()))
         conn.commit()
         return True
     except Exception:
@@ -101,6 +134,8 @@ def add_keyword(kw_type, value):
 
 def delete_keywords(kw_type, values):
     init_db()
+    if kw_type not in ('focus', 'exclude'):
+        return
     conn = get_conn()
     c = conn.cursor()
     for v in values:

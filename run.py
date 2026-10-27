@@ -383,6 +383,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
             self._respond(200, b'{"status":"ok"}', 'application/json')
+        elif path == '/api/keywords/state':
+            data = self._read_json()
+            try:
+                kw_type = data.get('type', 'focus')
+                states = data.get('states', {})
+                db.set_keyword_states(kw_type, states)
+            except Exception:
+                pass
+            self._respond(200, b'{"status":"ok"}', 'application/json')
         elif path == '/api/decisions':
             data = self._read_json()
             key = str(data.get('key') or '').strip()[:500]
