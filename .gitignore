@@ -1,0 +1,12 @@
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+
+# Legacy scraper output
+data/local_merchant_leads.json

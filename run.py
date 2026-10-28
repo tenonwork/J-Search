@@ -16,12 +16,13 @@ import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
 
-from fetch_live_jobs import get_live_remote_jobs
-from fetch_local_merchants import get_local_merchants_ddg
-from fetch_rss_jobs import get_rss_remote_jobs
-from job_dashboard import build_dashboard, get_scoring_config, score_job, _is_blocked, job_key
-from applied_page import build_decisions_page
-import db
+from fetchers.fetch_live_jobs import get_live_remote_jobs
+from fetchers.fetch_local_merchants import get_local_merchants_ddg
+from fetchers.fetch_rss_jobs import get_rss_remote_jobs
+from app.job_dashboard import build_dashboard, get_scoring_config, score_job, _is_blocked, job_key
+from app.applied_page import build_decisions_page
+from app.paths import DASHBOARD_PATH
+from app import db
 
 PORT = 8765
 
@@ -325,7 +326,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 _build_dashboard()
             except Exception as e:
                 print('[Dashboard] Rebuild failed:', e)
-            self._serve_file('dashboard.html', 'text/html; charset=utf-8')
+            self._serve_file(DASHBOARD_PATH, 'text/html; charset=utf-8')
         elif path.startswith('/run'):
             parsed = urlparse(self.path)
             params = parse_qs(parsed.query)

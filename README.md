@@ -27,7 +27,7 @@ The pipeline is split into five decoupled layers:
 
 * **Language:** Python 3
 * **Server:** `http.server` (no framework, no build step)
-* **Storage:** SQLite via the stdlib `sqlite3` module (`jsearch.db`)
+* **Storage:** SQLite via the stdlib `sqlite3` module (`data/jsearch.db`)
 * **HTTP client:** `requests`
 * **HTML parsing:** `BeautifulSoup` (`bs4`) with the stdlib `html.parser`
 * **Feed parsing:** `feedparser`
@@ -50,7 +50,7 @@ Local listings are filtered by a tech-title regex before scoring, so HR, supply-
 
 ## Scoring Engine
 
-Weights live in `DEFAULT_SCORING_CONFIG` in `job_dashboard.py` and are no longer hardcoded into the matching loop.
+Weights live in `DEFAULT_SCORING_CONFIG` in `app/job_dashboard.py` and are no longer hardcoded into the matching loop.
 
 | Group | Default weight | Default keywords |
 | :-- | :-- | :-- |
@@ -98,7 +98,7 @@ Presets are applied in the browser by the strictness toggle; the server scores e
 
 | Route | Method | Purpose |
 | :-- | :-- | :-- |
-| `/` | GET | Rebuild and serve `dashboard.html` (falls back to SQLite if nothing is in memory) |
+| `/` | GET | Rebuild and serve `output/dashboard.html` (falls back to SQLite if nothing is in memory) |
 | `/run?mode=all\|global\|local` | GET | Start a scrape and serve the loading page |
 | `/status` | GET | `{"running": true\|false}` for the loading page |
 | `/refresh` | POST | Re-run all scrapers |
@@ -115,7 +115,7 @@ Presets are applied in the browser by the strictness toggle; the server scores e
 
 ## Database
 
-`jsearch.db`, created automatically on first run.
+`data/jsearch.db`, created automatically on first run.
 
 | Table | Columns |
 | :-- | :-- |
@@ -132,22 +132,29 @@ Decision snapshots (title, company, score, etc.) are stored alongside the key, s
 ### 1. Prerequisites
 
 ```bash
-pip install requests beautifulsoup4 feedparser
+pip install -r requirements.txt
 ```
 
 ### 2. File Structure
 
 ```text
-├── run.py                     # HTTP server, pipeline orchestration, API routes
-├── job_dashboard.py           # Scoring engine, presets, dashboard template
-├── applied_page.py            # Applied and hidden tracker page templates
-├── db.py                      # SQLite layer (keywords, jobs, decisions)
-├── fetch_live_jobs.py         # Global API sources
-├── fetch_rss_jobs.py          # Global RSS feeds
-├── fetch_local_merchants.py   # Local Kenyan board scrapers
-├── local_directory_scraper.py # Legacy Playwright lead scraper (not used by the pipeline)
-├── dashboard.html             # Generated output (rebuilt on every GET /)
-└── jsearch.db                 # SQLite database (created on first run)
+├── run.py                           # HTTP server, pipeline orchestration, API routes
+├── requirements.txt                 # Runtime dependencies
+├── app/
+│   ├── paths.py                     # Project paths (database, generated output)
+│   ├── db.py                        # SQLite layer (keywords, jobs, decisions)
+│   ├── job_dashboard.py             # Scoring engine, presets, dashboard template
+│   └── applied_page.py              # Applied and hidden tracker page templates
+├── fetchers/
+│   ├── fetch_live_jobs.py           # Global API sources
+│   ├── fetch_rss_jobs.py            # Global RSS feeds
+│   └── fetch_local_merchants.py     # Local Kenyan board scrapers
+├── legacy/
+│   └── local_directory_scraper.py   # Legacy Playwright scraper (not used by the pipeline)
+├── data/
+│   └── jsearch.db                   # SQLite database (created on first run)
+└── output/
+    └── dashboard.html               # Generated output (rebuilt on every GET /)
 ```
 
 ### 3. Run
@@ -164,7 +171,7 @@ The server starts on `http://localhost:8765` and opens your default browser. Pic
 * DuckDuckGo search scraping now often returns a bot-challenge page (HTTP 202). It is treated as an optional source, never a required one.
 * HTML scrapers depend on BrighterMonday/JobsInKenya markup and will need selector updates if those sites redesign.
 * Job identity is the normalised URL (host + path). A reposted job with a new slug/URL will reappear, the same role listed on two sources with different URLs is treated as two jobs, and boards that put the job ID only in query parameters can collide.
-* Decisions live in `jsearch.db`; deleting the database deletes the application history.
+* Decisions live in `data/jsearch.db`; deleting the database deletes the application history.
 * Keyword changes affect visibility only. The scoring profile (core skills, AI skills, weights, dealbreakers) is built in and is not edited by the keyword manager.
 * Everything is single-user and local. There is no authentication and the server binds to all interfaces on port 8765.
 

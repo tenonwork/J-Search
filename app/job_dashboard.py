@@ -3,6 +3,8 @@ import re
 import json
 from urllib.parse import urlparse
 
+from .paths import DASHBOARD_PATH
+
 
 BLOCKED_DOMAINS = {
     "remotive.com",
@@ -824,8 +826,8 @@ def build_dashboard(remote_jobs=None, local_leads=None, config=None,
     html_content = html_content.replace('__DISMISSED_COUNT__', str(dismissed_count))
     html_content = html_content.replace('__JOBS_JSON__', jobs_json)
 
-    output_file = "dashboard.html"
-    with open(output_file, "w", encoding="utf-8") as f:
+    DASHBOARD_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(DASHBOARD_PATH, "w", encoding="utf-8") as f:
         f.write(html_content)
 
-    print("[OK] Dashboard compiled -> " + os.path.realpath(output_file))
+    print("[OK] Dashboard compiled -> " + os.path.realpath(DASHBOARD_PATH))

@@ -1,6 +1,9 @@
 import asyncio
+from pathlib import Path
 from playwright.async_api import async_playwright
 import json
+
+OUTPUT_PATH = Path(__file__).resolve().parent.parent / "data" / "local_merchant_leads.json"
 
 async def scrape_local_merchants():
     # Pivoting target to wholesale suppliers and commercial merchant groups
@@ -43,10 +46,11 @@ async def scrape_local_merchants():
                 except Exception as card_err:
                     continue
                 
-            with open("local_merchant_leads.json", "w", encoding="utf-8") as f:
+            OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
                 json.dump(local_leads, f, indent=4)
                 
-            print("\nSuccessfully compiled mid-tier targets to 'local_merchant_leads.json'!")
+            print(f"\nSuccessfully compiled mid-tier targets to '{OUTPUT_PATH}'!")
             
         except Exception as e:
             print(f"Connection failed or page timed out: {e}")
