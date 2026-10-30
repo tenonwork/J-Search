@@ -38,25 +38,114 @@ DEFAULT_SCORING_CONFIG = {
 }
 
 
-def get_scoring_config(preset=None):
-    config = DEFAULT_SCORING_CONFIG.copy()
+PROFILE_VERSION = 1
+
+# Fields that can be stored in the settings table. Presets own thresholds and
+# enforcement; the profile owns only the vocabulary and weights.
+PROFILE_FIELDS = (
+    "core_skills", "core_weight",
+    "ai_skills", "ai_weight",
+    "good_matches", "good_weight",
+    "pos_weight",
+    "dealbreakers", "dealbreaker_weight",
+)
+
+_PROFILE_LIST_FIELDS = {
+    "core_skills": 60,
+    "ai_skills": 40,
+    "good_matches": 40,
+    "dealbreakers": 40,
+}
+
+_PROFILE_WEIGHT_RANGES = {
+    "core_weight": (0, 100),
+    "ai_weight": (0, 100),
+    "good_weight": (0, 100),
+    "pos_weight": (0, 100),
+    "dealbreaker_weight": (-100, 0),
+}
+
+
+def normalize_scoring_profile(profile):
+    """Return only valid, normalised profile overrides.
+
+    Unknown keys, wrong types and empty strings are dropped. This is the
+    boundary between stored/HTTP data and the scoring engine.
+    """
+    if not isinstance(profile, dict):
+        return {}
+
+    clean = {}
+    for field, limit in _PROFILE_LIST_FIELDS.items():
+        if field not in profile:
+            continue
+        values = profile[field]
+        if not isinstance(values, (list, tuple)):
+            continue
+        out = []
+        seen = set()
+        for value in values:
+            if not isinstance(value, str):
+                continue
+            value = " ".join(value.lower().split()).strip(" ,;:")
+            if not value or len(value) > 60 or value in seen:
+                continue
+            seen.add(value)
+            out.append(value)
+            if len(out) >= limit:
+                break
+        clean[field] = out
+
+    for field, (low, high) in _PROFILE_WEIGHT_RANGES.items():
+        if field not in profile:
+            continue
+        try:
+            value = int(profile[field])
+        except (TypeError, ValueError):
+            continue
+        clean[field] = max(low, min(high, value))
+
+    return clean
+
+
+def get_scoring_config(preset=None, profile=None):
+    """Build a scoring config from defaults, a saved profile and a preset.
+
+    Every list is rebuilt so callers can never mutate DEFAULT_SCORING_CONFIG
+    through a returned config.
+    """
+    config = {}
+    for key, value in DEFAULT_SCORING_CONFIG.items():
+        config[key] = list(value) if isinstance(value, list) else value
+
+    for key, value in normalize_scoring_profile(profile or {}).items():
+        config[key] = list(value) if isinstance(value, list) else value
+
     if preset == "strict":
-        config["dealbreaker_weight"] = -30
         config["enforce_dealbreakers_remote"] = True
         config["min_score_remote"] = 10
         config["enforce_dealbreakers_local"] = True
         config["min_score_local"] = 3
-        config["preset"] = "strict"
     elif preset == "lenient":
-        config["dealbreaker_weight"] = -15
         config["enforce_dealbreakers_remote"] = False
         config["min_score_remote"] = 0
         config["enforce_dealbreakers_local"] = False
         config["min_score_local"] = -10
-        config["preset"] = "lenient"
     else:
-        config["preset"] = "balanced"
+        preset = "balanced"
+
+    config["preset"] = preset
     return config
+
+
+def effective_profile(profile=None):
+    """A full, JSON-safe profile for the UI and the settings table."""
+    config = get_scoring_config("balanced", profile)
+    result = {"version": PROFILE_VERSION}
+    for field in PROFILE_FIELDS:
+        value = config[field]
+        result[field] = list(value) if isinstance(value, list) else value
+    return result
 
 
 def _is_blocked(url: str) -> bool:
@@ -94,6 +183,24 @@ def job_key(url, title='', company='', location=''):
     return normalized or 'unknown'
 
 
+_WORD_SAFE = re.compile(r"^[a-z0-9]+(?:[ \-/][a-z0-9]+)*$")
+
+
+def _matches_skill(text, skill):
+    """Match one configured keyword against lower-cased job text.
+
+    Plain words use word boundaries, preserving the existing protection
+    against "pos" matching "position". Terms with punctuation that \\b cannot
+    express (c++, c#, .net, node.js) fall back to literal matching.
+    """
+    skill = " ".join(str(skill or "").lower().split())
+    if not skill:
+        return False
+    if _WORD_SAFE.match(skill):
+        return re.search(r"\b" + re.escape(skill) + r"\b", text) is not None
+    return skill in text
+
+
 def score_job(job, config=None):
     if config is None:
         config = DEFAULT_SCORING_CONFIG
@@ -119,26 +226,64 @@ def score_job(job, config=None):
         matches_found.append("pos (system)")
 
     for word in core_skills:
-        if re.search(r'\b' + re.escape(word) + r'\b', text):
+        if _matches_skill(text, word):
             score += core_weight
             matches_found.append(word)
 
     for word in ai_skills:
-        if re.search(r'\b' + re.escape(word) + r'\b', text):
+        if _matches_skill(text, word):
             score += ai_weight
             matches_found.append(word)
 
     for word in good_matches:
-        if re.search(r'\b' + re.escape(word) + r'\b', text):
+        if _matches_skill(text, word):
             score += good_weight
             matches_found.append(word)
 
     for word in dealbreakers:
-        if re.search(r'\b' + re.escape(word) + r'\b', text):
+        if _matches_skill(text, word):
             score += dealbreaker_weight
             red_flags_found.append(word)
 
     return score, matches_found, red_flags_found
+
+
+def passes_filters(job, config=None, strictness="balanced", exclude_keywords=()):
+    """Python mirror of the dashboard's client-side visibility rules.
+
+    Used for the profile impact preview so the numbers shown in the modal
+    match what the dashboard will actually display.
+    """
+    if config is None:
+        config = DEFAULT_SCORING_CONFIG
+
+    text = (
+        (job.get("title", "") or "") + " " + (job.get("desc", "") or "")
+    ).lower()
+
+    for keyword in exclude_keywords:
+        if _matches_skill(text, keyword):
+            return False
+
+    source = job.get("source")
+    score, _, red_flags = score_job(job, config)
+
+    if strictness == "strict":
+        if red_flags:
+            return False
+        if source == "global" and score < config.get("min_score_remote", 10):
+            return False
+        if source == "local" and score < config.get("min_score_local", 3):
+            return False
+    elif strictness == "balanced":
+        if source == "global" and red_flags:
+            return False
+        if source == "global" and score < config.get("min_score_remote", 5):
+            return False
+        if source == "local" and score < config.get("min_score_local", 0):
+            return False
+
+    return True
 
 
 DASHBOARD_TEMPLATE = """<!DOCTYPE html>
@@ -242,6 +387,37 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
     .reason-item input { width: 16px; height: 16px; cursor: pointer; }
     textarea { width: 100%; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 13px; font-family: inherit; resize: vertical; }
     textarea:focus { outline: 2px solid #bfdbfe; border-color: #2563eb; }
+    .modal-lg { max-width: 720px; }
+    .field-label { display: block; font-size: 12px; font-weight: 700; color: #334155; margin: 16px 0 6px 0; text-transform: uppercase; letter-spacing: 0.04em; }
+    .field-hint { font-weight: 500; text-transform: none; letter-spacing: 0; color: #94a3b8; }
+    .profile-privacy { font-size: 12px; color: #64748b; margin: 14px 0 0 0; line-height: 1.5; }
+    .profile-error { font-size: 13px; color: #991b1b; font-weight: 600; margin: 10px 0 0 0; min-height: 18px; }
+    .profile-loading { text-align: center; padding: 44px 10px; color: #475569; font-size: 14px; }
+    .spinner.small { width: 36px; height: 36px; border: 4px solid #e2e8f0; border-top-color: #2563eb; border-radius: 50%; margin: 0 auto 16px auto; animation: spin 0.9s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .impact-box { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 14px; font-size: 13px; color: #334155; margin-bottom: 18px; line-height: 1.55; }
+    .impact-box strong { color: #0f172a; }
+    .impact-warn { color: #991b1b; font-weight: 600; }
+    .profile-weights { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 18px; padding: 12px 14px; background: #f8fafc; border-radius: 8px; }
+    .profile-weights label { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: #475569; }
+    .profile-weights input { width: 62px; padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 12px; font-family: inherit; }
+    .profile-group { margin-bottom: 20px; }
+    .profile-group h4 { margin: 0 0 8px 0; font-size: 13px; color: #334155; }
+    .profile-group .hint { font-weight: 500; color: #94a3b8; }
+    .profile-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .profile-chip { display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px; border-radius: 7px; background: #eff6ff; color: #1e40af; font-size: 13px; font-weight: 500; cursor: pointer; border: 1px solid transparent; }
+    .profile-chip input { width: 15px; height: 15px; cursor: pointer; }
+    .profile-chip.checked { border-color: #93c5fd; }
+    .profile-chip.exclude { background: #fef2f2; color: #991b1b; }
+    .profile-chip.exclude.checked { border-color: #fecaca; }
+    .profile-chip.dealbreaker { background: #fff7ed; color: #9a3412; }
+    .profile-chip.dealbreaker.checked { border-color: #fdba74; }
+    .profile-chip .why { font-size: 11px; color: #64748b; font-weight: 400; }
+    .profile-empty { color: #94a3b8; font-size: 13px; font-style: italic; }
+    .profile-focus { margin: 0; font-size: 13px; color: #1e40af; line-height: 1.6; }
+    .profile-notes { margin: 0; padding-left: 20px; font-size: 13px; color: #64748b; line-height: 1.6; }
+    .profile-mode { margin: 0 0 16px 0; font-size: 12px; font-weight: 600; color: #475569; }
+    .profile-mode select { margin-left: 8px; }
 </style>
 </head>
 <body>
@@ -265,7 +441,10 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
     <div class="panel">
         <div class="panel-head">
             <h3>Keywords &amp; Preferences</h3>
-            <span class="count" id="kwStatus">loading...</span>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                <span class="count" id="kwStatus">loading...</span>
+                <button class="btn btn-dark btn-sm" onclick="openProfileModal()">Import from CV</button>
+            </div>
         </div>
         <p class="kw-note">Scrapers fetch a broad set of jobs. These keywords only change what is shown here, not what is fetched.</p>
 
@@ -360,6 +539,42 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
     </div>
 </div>
 
+<div id="profileModal" class="modal">
+    <div class="modal-box modal-lg">
+        <div class="modal-head">
+            <h3>Import from CV</h3>
+            <button class="btn btn-outline btn-sm" onclick="closeProfileModal()">Close</button>
+        </div>
+        <div class="modal-body">
+            <div id="profileStepInput">
+                <p class="modal-intro">Paste your CV and list anything you want to avoid. Nothing changes until you review and apply the proposal.</p>
+                <label class="field-label" for="cvText">CV text</label>
+                <textarea id="cvText" rows="10" placeholder="Paste your CV here. Contact details are removed before the model sees it."></textarea>
+                <label class="field-label" for="cvPreferences">Things to avoid <span class="field-hint">comma or newline separated</span></label>
+                <textarea id="cvPreferences" rows="3" placeholder="e.g. PHP, on-site only, staffing agencies, 24/7 on-call"></textarea>
+                <p class="profile-privacy" id="llmTarget">Checking model configuration...</p>
+                <p class="profile-error" id="profileError"></p>
+            </div>
+            <div id="profileStepLoading" class="profile-loading" style="display:none;">
+                <div class="spinner small"></div>
+                <p>Analysing the CV. Local models can take 30&ndash;60 seconds on CPU.</p>
+            </div>
+            <div id="profileStepReview" style="display:none;">
+                <div id="profileImpact" class="impact-box"></div>
+                <div id="profileSections"></div>
+                <p class="profile-mode">When applying: <span class="field-hint">keywords are added to the existing lists; nothing is deleted.</span></p>
+                <p class="profile-error" id="profileReviewError"></p>
+            </div>
+        </div>
+        <div class="modal-foot">
+            <button class="btn btn-outline" onclick="closeProfileModal()">Cancel</button>
+            <button class="btn btn-primary" id="profileAnalyzeBtn" onclick="analyzeCv()">Analyse CV</button>
+            <button class="btn btn-outline" id="profileBackBtn" style="display:none;" onclick="backToProfileInput()">Back</button>
+            <button class="btn btn-primary" id="profileApplyBtn" style="display:none;" onclick="applyProfile()">Apply selected</button>
+        </div>
+    </div>
+</div>
+
 <div id="decisionModal" class="modal">
     <div class="modal-box">
         <div class="modal-head">
@@ -399,6 +614,8 @@ let pendingKeywordDelete = null;
 let pendingDismissJob = null;
 let lastDecision = null;
 let toastTimer = null;
+let profileProposal = null;
+let profilePreviewTimer = null;
 
 function escapeHtml(text) {
     const div = document.createElement('div');
@@ -428,8 +645,12 @@ async function api(path, method, body) {
     const opts = { method: method || 'GET', headers: { 'Content-Type': 'application/json' } };
     if (body) opts.body = JSON.stringify(body);
     const res = await fetch(path, opts);
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    return res.headers.get('content-type') && res.headers.get('content-type').includes('json') ? res.json() : null;
+    const isJson = res.headers.get('content-type') && res.headers.get('content-type').includes('json');
+    const data = isJson ? await res.json() : null;
+    if (!res.ok) {
+        throw new Error((data && (data.error || data.message)) || ('HTTP ' + res.status));
+    }
+    return data;
 }
 
 async function loadKeywords() {
@@ -561,6 +782,261 @@ async function saveKeywordStates() {
     }
 }
 
+/* ---------------------------------------------------------------------
+   CV import
+   --------------------------------------------------------------------- */
+
+function openProfileModal() {
+    profileProposal = null;
+    document.getElementById('profileError').textContent = '';
+    document.getElementById('profileReviewError').textContent = '';
+    document.getElementById('profileStepInput').style.display = '';
+    document.getElementById('profileStepLoading').style.display = 'none';
+    document.getElementById('profileStepReview').style.display = 'none';
+    document.getElementById('profileAnalyzeBtn').style.display = '';
+    document.getElementById('profileBackBtn').style.display = 'none';
+    document.getElementById('profileApplyBtn').style.display = 'none';
+    document.getElementById('profileApplyBtn').disabled = false;
+    document.getElementById('profileModal').classList.add('active');
+    refreshLlmTarget();
+}
+
+function closeProfileModal() {
+    document.getElementById('profileModal').classList.remove('active');
+}
+
+async function refreshLlmTarget() {
+    const el = document.getElementById('llmTarget');
+    try {
+        const data = await api('/api/profile');
+        const llm = data.llm || {};
+        if (llm.configured) {
+            el.textContent = 'Model: ' + llm.model + ' @ ' + llm.base_url +
+                (llm.local ? ' — stays on this machine.' : ' — CV text is sent to this remote endpoint.');
+        } else {
+            el.textContent = 'No model configured. Start Ollama and set JSEARCH_LLM_MODEL, or point JSEARCH_LLM_BASE_URL at an OpenAI-compatible API.';
+        }
+    } catch (e) {
+        el.textContent = 'Could not read the model configuration.';
+    }
+}
+
+async function analyzeCv() {
+    const cv = document.getElementById('cvText').value.trim();
+    const preferences = document.getElementById('cvPreferences').value.trim();
+    const errorEl = document.getElementById('profileError');
+    errorEl.textContent = '';
+    if (cv.length < 40) {
+        errorEl.textContent = 'Paste a few lines of your CV first.';
+        document.getElementById('cvText').focus();
+        return;
+    }
+
+    document.getElementById('profileStepInput').style.display = 'none';
+    document.getElementById('profileStepReview').style.display = 'none';
+    document.getElementById('profileStepLoading').style.display = '';
+    document.getElementById('profileAnalyzeBtn').style.display = 'none';
+
+    try {
+        const data = await api('/api/profile/analyze', 'POST', {
+            cv_text: cv,
+            preferences: preferences,
+            strictness: strictness
+        });
+        profileProposal = data.proposal;
+        renderProfileProposal(data);
+        document.getElementById('profileStepLoading').style.display = 'none';
+        document.getElementById('profileStepReview').style.display = '';
+        document.getElementById('profileBackBtn').style.display = '';
+        document.getElementById('profileApplyBtn').style.display = '';
+    } catch (e) {
+        document.getElementById('profileStepLoading').style.display = 'none';
+        document.getElementById('profileStepInput').style.display = '';
+        document.getElementById('profileAnalyzeBtn').style.display = '';
+        errorEl.textContent = e.message;
+    }
+}
+
+function backToProfileInput() {
+    document.getElementById('profileStepReview').style.display = 'none';
+    document.getElementById('profileStepInput').style.display = '';
+    document.getElementById('profileAnalyzeBtn').style.display = '';
+    document.getElementById('profileBackBtn').style.display = 'none';
+    document.getElementById('profileApplyBtn').style.display = 'none';
+}
+
+function weightInput(id, label, value, min, max) {
+    const number = Number(value);
+    const safe = Number.isFinite(number) ? number : 0;
+    return '<label>' + escapeHtml(label) + ' <input type="number" id="' + id +
+        '" value="' + safe + '" min="' + min + '" max="' + max + '"></label>';
+}
+
+function renderChip(style, value, checked, source) {
+    const safe = escapeHtml(value).replace(/"/g, '&quot;');
+    return '<label class="profile-chip ' + style + (checked ? ' checked' : '') + '">' +
+        '<input type="checkbox"' + (checked ? ' checked' : '') + ' value="' + safe + '">' +
+        '<span>' + escapeHtml(value) + '</span>' +
+        (source ? '<span class="why">' + escapeHtml(source) + '</span>' : '') +
+        '</label>';
+}
+
+function renderChipGroup(title, field, style, values, checked, hint) {
+    const chips = (values && values.length)
+        ? values.map(value => renderChip(style, value, checked, '')).join('')
+        : '<span class="profile-empty">None</span>';
+    return '<div class="profile-group"><h4>' + escapeHtml(title) +
+        (hint ? ' <span class="hint">' + escapeHtml(hint) + '</span>' : '') +
+        '</h4><div class="profile-chips" data-field="' + field + '">' + chips + '</div></div>';
+}
+
+function renderExcludeGroup(items) {
+    if (!items || !items.length) return '';
+    return '<div class="profile-group"><h4>Hide keywords <span class="hint">matching jobs disappear</span></h4>' +
+        '<div class="profile-chips" data-field="exclude">' +
+        items.map(item => renderChip('exclude', item.value, !!item.checked, item.source)).join('') +
+        '</div></div>';
+}
+
+function renderProfileProposal(data) {
+    const proposal = data.proposal || {};
+    const profile = proposal.profile || {};
+    const parts = [];
+
+    parts.push('<div class="profile-weights">' +
+        weightInput('weightCore', 'Core', profile.core_weight, 0, 100) +
+        weightInput('weightAI', 'AI', profile.ai_weight, 0, 100) +
+        weightInput('weightGood', 'Match', profile.good_weight, 0, 100) +
+        weightInput('weightBad', 'Dealbreaker', profile.dealbreaker_weight, -100, 0) +
+        '</div>');
+    parts.push(renderChipGroup('Core skills', 'core_skills', 'core', profile.core_skills || [], true, ''));
+    parts.push(renderChipGroup('AI & infrastructure', 'ai_skills', 'core', profile.ai_skills || [], true, ''));
+    parts.push(renderChipGroup('Dealbreakers', 'dealbreakers', 'dealbreaker', profile.dealbreakers || [], true, 'hard drop under Strict and Balanced'));
+    parts.push(renderExcludeGroup(proposal.exclude || []));
+    parts.push('<div class="profile-group"><h4>Highlight keywords <span class="hint">derived from the selected CV skills</span></h4><p class="profile-focus" id="profileFocusPreview"></p></div>');
+
+    const warnings = proposal.warnings || [];
+    if (warnings.length) {
+        parts.push('<div class="profile-group"><h4>Notes</h4><ul class="profile-notes">' +
+            warnings.map(w => '<li>' + escapeHtml(w) + '</li>').join('') + '</ul></div>');
+    }
+
+    const reasons = data.reason_counts || {};
+    const reasonKeys = Object.keys(reasons);
+    if (reasonKeys.length) {
+        parts.push('<div class="profile-group"><h4>Dismissal history <span class="hint">used for suggestions only</span></h4><ul class="profile-notes">' +
+            reasonKeys.map(reason => '<li>' + escapeHtml(reason) + ': ' + reasons[reason] + '</li>').join('') +
+            '</ul></div>');
+    }
+
+    document.getElementById('profileSections').innerHTML = parts.join('');
+    updateFocusPreview();
+    renderImpact(data.impact);
+}
+
+function selectedValues(field) {
+    const box = document.querySelector('#profileSections [data-field="' + field + '"]');
+    if (!box) return [];
+    return Array.from(box.querySelectorAll('input:checked')).map(cb => cb.value);
+}
+
+function currentFocus() {
+    const seen = new Set();
+    const out = [];
+    selectedValues('core_skills').concat(selectedValues('ai_skills')).forEach(value => {
+        if (!seen.has(value)) {
+            seen.add(value);
+            out.push(value);
+        }
+    });
+    return out.slice(0, 25);
+}
+
+function updateFocusPreview() {
+    const el = document.getElementById('profileFocusPreview');
+    if (!el) return;
+    const values = currentFocus();
+    el.textContent = values.length ? values.join(', ') : 'None - select at least one skill.';
+}
+
+function clampNumber(id, fallback, min, max) {
+    const el = document.getElementById(id);
+    let value = el ? parseInt(el.value, 10) : fallback;
+    if (!Number.isFinite(value)) value = fallback;
+    return Math.max(min, Math.min(max, value));
+}
+
+function collectProfile() {
+    const profile = Object.assign({}, profileProposal.profile);
+    profile.core_skills = selectedValues('core_skills');
+    profile.ai_skills = selectedValues('ai_skills');
+    profile.dealbreakers = selectedValues('dealbreakers');
+    profile.core_weight = clampNumber('weightCore', profile.core_weight, 0, 100);
+    profile.ai_weight = clampNumber('weightAI', profile.ai_weight, 0, 100);
+    profile.good_weight = clampNumber('weightGood', profile.good_weight, 0, 100);
+    profile.dealbreaker_weight = clampNumber('weightBad', profile.dealbreaker_weight, -100, 0);
+    return {
+        profile: profile,
+        focus: currentFocus(),
+        exclude: selectedValues('exclude'),
+        strictness: strictness
+    };
+}
+
+function renderImpact(impact) {
+    const el = document.getElementById('profileImpact');
+    if (!el || !impact) return;
+    const before = Number(impact.before) || 0;
+    const after = Number(impact.after) || 0;
+    const labels = { strict: 'Strict', balanced: 'Balanced', lenient: 'Lenient' };
+    let html = '<strong>' + before + '</strong> jobs visible now &rarr; <strong>' + after +
+        '</strong> after applying (' + (labels[strictness] || 'Balanced') + ').';
+    if (impact.hidden_by_exclude) {
+        html += '<br><span class="impact-warn">' + impact.hidden_by_exclude + ' hidden by the new hide keywords.</span>';
+    }
+    if (impact.hidden_by_score) {
+        html += '<br>' + impact.hidden_by_score + ' drop out because of scoring changes.';
+    }
+    if (impact.newly_visible) {
+        html += '<br>' + impact.newly_visible + ' become visible again.';
+    }
+    if (impact.newly_highlighted) {
+        html += '<br>' + impact.newly_highlighted + ' will get a highlight outline.';
+    }
+    el.innerHTML = html;
+}
+
+function schedulePreview() {
+    if (profilePreviewTimer) clearTimeout(profilePreviewTimer);
+    profilePreviewTimer = setTimeout(previewProfile, 450);
+}
+
+async function previewProfile() {
+    if (!profileProposal) return;
+    try {
+        const data = await api('/api/profile/preview', 'POST', collectProfile());
+        renderImpact(data.impact);
+    } catch (e) {
+        /* Keep the last good preview if a request fails. */
+    }
+}
+
+async function applyProfile() {
+    if (!profileProposal) return;
+    const button = document.getElementById('profileApplyBtn');
+    const errorEl = document.getElementById('profileReviewError');
+    errorEl.textContent = '';
+    button.disabled = true;
+    try {
+        await api('/api/profile/apply', 'POST', collectProfile());
+        toast('Profile applied');
+        window.location.reload();
+    } catch (e) {
+        errorEl.textContent = e.message;
+        button.disabled = false;
+    }
+}
+
 function updateCounts(data) {
     if (!data) return;
     if (typeof data.applied_count === 'number') {
@@ -675,11 +1151,24 @@ function enabledKeywordValues(type) {
     return filters[type].filter(k => k.enabled).map(k => k.value);
 }
 
+function skillMatches(text, skill) {
+    skill = String(skill || '').toLowerCase().trim();
+    if (!skill) return false;
+    if (/^[a-z0-9]+(?:[ /-][a-z0-9]+)*$/.test(skill)) {
+        try {
+            return new RegExp('\\\\b' + skill + '\\\\b').test(text);
+        } catch (e) {
+            return text.includes(skill);
+        }
+    }
+    return text.includes(skill);
+}
+
 function passesFilters(job) {
     const text = ((job.title || '') + ' ' + (job.desc || '')).toLowerCase();
 
     for (const ex of enabledKeywordValues('exclude')) {
-        if (ex && text.includes(ex)) return false;
+        if (skillMatches(text, ex)) return false;
     }
 
     if (strictness === 'strict') {
@@ -696,7 +1185,7 @@ function passesFilters(job) {
 
 function isFocused(job) {
     const text = ((job.title || '') + ' ' + (job.desc || '')).toLowerCase();
-    return enabledKeywordValues('focus').some(k => k && text.includes(k));
+    return enabledKeywordValues('focus').some(k => skillMatches(text, k));
 }
 
 function renderResults() {
@@ -775,6 +1264,21 @@ document.addEventListener('click', function (e) {
 
 document.getElementById('decisionModal').addEventListener('click', e => {
     if (e.target.id === 'decisionModal') closeDecisionModal();
+});
+
+document.getElementById('profileModal').addEventListener('click', e => {
+    if (e.target.id === 'profileModal') closeProfileModal();
+});
+
+document.getElementById('profileSections').addEventListener('change', e => {
+    const chip = e.target.closest('.profile-chip');
+    if (chip) chip.classList.toggle('checked', e.target.checked);
+    updateFocusPreview();
+    schedulePreview();
+});
+
+document.getElementById('profileSections').addEventListener('input', e => {
+    if (e.target.type === 'number') schedulePreview();
 });
 
 loadKeywords();

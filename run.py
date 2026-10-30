@@ -9,28 +9,48 @@ Usage:
     python run.py      (keep terminal open; Ctrl+C to stop)
 """
 
+import os
 import threading
 import time
 import webbrowser
 import json
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 from fetchers.fetch_live_jobs import get_live_remote_jobs
 from fetchers.fetch_local_merchants import get_local_merchants_ddg
 from fetchers.fetch_rss_jobs import get_rss_remote_jobs
-from app.job_dashboard import build_dashboard, get_scoring_config, score_job, _is_blocked, job_key
+from app.job_dashboard import (
+    build_dashboard, get_scoring_config, score_job, _is_blocked, _matches_skill,
+    job_key, passes_filters, effective_profile,
+)
 from app.applied_page import build_decisions_page
 from app.paths import DASHBOARD_PATH
-from app import db
+from app import cv_profile, db, llm_client
 
 PORT = 8765
+HOST = os.environ.get('JSEARCH_HOST', '127.0.0.1')
 
 _pipeline_lock = threading.Lock()
+_dashboard_lock = threading.Lock()
 _pipeline_running = False
 _global_jobs = []
 _local_jobs = []
+_scoring_profile = None
 _current_config = get_scoring_config("balanced")
+
+
+def _load_scoring_profile():
+    global _scoring_profile, _current_config
+    try:
+        _scoring_profile = db.get_scoring_profile()
+    except Exception as e:
+        print('[DB] Could not load scoring profile:', e)
+        _scoring_profile = None
+    _current_config = get_scoring_config("balanced", _scoring_profile)
+
+
+_load_scoring_profile()
 
 
 def _score_for_storage(jobs):
@@ -93,14 +113,15 @@ def _decision_counts():
 
 def _build_dashboard():
     counts = _decision_counts()
-    build_dashboard(
-        remote_jobs=_global_jobs,
-        local_leads=_local_jobs,
-        config=_current_config,
-        exclude_keys=_decision_keys(),
-        applied_count=counts['applied_count'],
-        dismissed_count=counts['dismissed_count'],
-    )
+    with _dashboard_lock:
+        build_dashboard(
+            remote_jobs=_global_jobs,
+            local_leads=_local_jobs,
+            config=_current_config,
+            exclude_keys=_decision_keys(),
+            applied_count=counts['applied_count'],
+            dismissed_count=counts['dismissed_count'],
+        )
 
 
 def _api_jobs():
@@ -130,6 +151,86 @@ def _api_jobs():
                 "source": source
             })
     return all_jobs
+
+
+def _enabled_keywords(kind):
+    try:
+        return [
+            item['value'] for item in db.get_keywords().get(kind, [])
+            if item.get('enabled')
+        ]
+    except Exception:
+        return []
+
+
+def _impact(profile, exclude, focus, strictness='balanced'):
+    """Compare visibility under the current and proposed configurations."""
+    if strictness not in ('strict', 'balanced', 'lenient'):
+        strictness = 'balanced'
+    current_config = get_scoring_config(strictness, _scoring_profile)
+    proposed = get_scoring_config(strictness, profile)
+    current_exclude = _enabled_keywords('exclude')
+    current_focus = _enabled_keywords('focus')
+    exclude = [value for value in (exclude or []) if value]
+    focus = [value for value in (focus or []) if value]
+
+    def visible(job, source, config, excludes):
+        item = dict(job)
+        item['source'] = source
+        return passes_filters(item, config, strictness, excludes)
+
+    def focused(job, keywords):
+        text = ((job.get('title') or '') + ' ' + (job.get('desc') or '')).lower()
+        return any(_matches_skill(text, keyword) for keyword in keywords)
+
+    before = after = scoring_only = newly_highlighted = 0
+    per_source = {}
+    for source, jobs in (('global', _global_jobs), ('local', _local_jobs)):
+        usable = [job for job in jobs if not _is_blocked(job.get('url', ''))]
+        source_before = sum(
+            1 for job in usable
+            if visible(job, source, current_config, current_exclude)
+        )
+        source_scoring = sum(
+            1 for job in usable
+            if visible(job, source, proposed, current_exclude)
+        )
+        source_after = sum(
+            1 for job in usable
+            if visible(job, source, proposed, exclude)
+        )
+        per_source[source] = {'before': source_before, 'after': source_after}
+        before += source_before
+        scoring_only += source_scoring
+        after += source_after
+        for job in usable:
+            if (
+                visible(job, source, proposed, exclude)
+                and focused(job, focus)
+                and not focused(job, current_focus)
+            ):
+                newly_highlighted += 1
+
+    return {
+        'before': before,
+        'after': after,
+        'hidden_by_score': max(0, before - scoring_only),
+        'hidden_by_exclude': max(0, scoring_only - after),
+        'newly_visible': max(0, after - before),
+        'newly_highlighted': newly_highlighted,
+        'global': per_source['global'],
+        'local': per_source['local'],
+    }
+
+
+def _api_profile():
+    return {
+        'profile': effective_profile(_scoring_profile),
+        'effective': _current_config,
+        'candidate': db.get_candidate_profile(),
+        'reason_counts': db.get_decision_reason_counts(),
+        'llm': llm_client.public_config(),
+    }
 
 
 def run_pipeline_global():
@@ -316,6 +417,107 @@ class DashboardHandler(BaseHTTPRequestHandler):
         )
         self._respond(200, page.encode('utf-8'), 'text/html; charset=utf-8')
 
+    def _respond_json(self, code, payload):
+        body = json.dumps(payload).encode('utf-8')
+        self._respond(code, body, 'application/json')
+
+    def _handle_profile_analyze(self):
+        data = self._read_json()
+        cv_text = str(data.get('cv_text') or '')
+        preferences = str(data.get('preferences') or '')
+        if len(cv_text.strip()) < 40:
+            self._respond_json(400, {'error': 'Paste a few lines of your CV first.'})
+            return
+
+        try:
+            analysis, warnings = cv_profile.analyze_cv(cv_text)
+        except llm_client.LLMError as exc:
+            self._respond_json(503, {'error': str(exc)})
+            return
+        except Exception as exc:
+            self._respond_json(500, {'error': 'Analysis failed: ' + str(exc)})
+            return
+
+        try:
+            reason_counts = db.get_decision_reason_counts()
+            proposal = cv_profile.build_proposal(
+                analysis,
+                preferences=preferences,
+                current_profile=_scoring_profile,
+                current_focus=_enabled_keywords('focus'),
+                current_exclude=_enabled_keywords('exclude'),
+                reason_counts=reason_counts,
+            )
+            proposal['warnings'] = warnings + proposal.get('warnings', [])
+            db.save_candidate_profile(analysis)
+            impact = _impact(
+                proposal['profile'],
+                [item['value'] for item in proposal['exclude'] if item['checked']],
+                proposal['focus'],
+                strictness=data.get('strictness', 'balanced'),
+            )
+        except Exception as exc:
+            self._respond_json(500, {'error': 'Could not build the proposal: ' + str(exc)})
+            return
+
+        self._respond_json(200, {
+            'proposal': proposal,
+            'impact': impact,
+            'reason_counts': reason_counts,
+            'warnings': warnings,
+        })
+
+    def _handle_profile_preview(self):
+        data = self._read_json()
+        try:
+            profile = cv_profile.clean_profile(data.get('profile') or {})
+            focus = cv_profile.clean_keyword_list(data.get('focus') or [])
+            exclude = cv_profile.clean_keyword_list(data.get('exclude') or [])
+            impact = _impact(
+                profile, exclude, focus,
+                strictness=data.get('strictness', 'balanced'),
+            )
+        except Exception as exc:
+            self._respond_json(400, {'error': 'Could not preview that profile: ' + str(exc)})
+            return
+        self._respond_json(200, {'impact': impact})
+
+    def _handle_profile_apply(self):
+        data = self._read_json()
+        try:
+            profile = cv_profile.clean_profile(data.get('profile') or {})
+            focus = cv_profile.clean_keyword_list(data.get('focus') or [])
+            exclude = cv_profile.clean_keyword_list(data.get('exclude') or [])
+        except Exception as exc:
+            self._respond_json(400, {'error': 'Invalid profile: ' + str(exc)})
+            return
+
+        if not db.save_scoring_profile(profile):
+            self._respond_json(500, {'error': 'Could not save the scoring profile.'})
+            return
+
+        if data.get('mode') == 'replace':
+            db.replace_keywords('focus', focus)
+            db.replace_keywords('exclude', exclude)
+        else:
+            db.add_keywords_bulk('focus', focus)
+            db.add_keywords_bulk('exclude', exclude)
+
+        _load_scoring_profile()
+        _build_dashboard()
+        self._respond_json(200, {
+            'status': 'ok',
+            'reload': True,
+            'focus_count': len(focus),
+            'exclude_count': len(exclude),
+        })
+
+    def _handle_profile_reset(self):
+        db.delete_setting('scoring_profile')
+        _load_scoring_profile()
+        _build_dashboard()
+        self._respond_json(200, {'status': 'ok', 'reload': True})
+
     def do_GET(self):
         global _pipeline_running
         path = urlparse(self.path).path
@@ -345,6 +547,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             kws = db.get_keywords()
             body = json.dumps(kws).encode('utf-8')
             self._respond(200, body, 'application/json')
+        elif path == '/api/profile':
+            self._respond_json(200, _api_profile())
         elif path == '/api/jobs':
             _load_jobs_from_db()
             body = json.dumps(_api_jobs()).encode('utf-8')
@@ -420,6 +624,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             payload = {'status': 'ok'}
             payload.update(_decision_counts())
             self._respond(200, json.dumps(payload).encode('utf-8'), 'application/json')
+        elif path == '/api/profile/analyze':
+            self._handle_profile_analyze()
+        elif path == '/api/profile/preview':
+            self._handle_profile_preview()
+        elif path == '/api/profile/apply':
+            self._handle_profile_apply()
+        elif path == '/api/profile/reset':
+            self._handle_profile_reset()
         elif path == '/run':
             data = self._read_json()
             mode = data.get('mode', 'all')
@@ -457,13 +669,13 @@ if __name__ == '__main__':
     _load_jobs_from_db()
     _build_dashboard()
 
-    server = HTTPServer(('', PORT), DashboardHandler)
+    server = ThreadingHTTPServer((HOST, PORT), DashboardHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
     url = f'http://localhost:{PORT}'
     try:
-        print(f'[Web] Dashboard live at {url}')
+        print(f'[Web] Dashboard live at {url} (bound to {HOST})')
     except Exception:
         print(f'Dashboard live at {url}')
     print('   Press Ctrl+C to stop.\n')

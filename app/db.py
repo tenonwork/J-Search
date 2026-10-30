@@ -59,6 +59,11 @@ def init_db():
         updated_at TEXT NOT NULL DEFAULT ''
     )''')
     c.execute('CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status)')
+    c.execute('''CREATE TABLE IF NOT EXISTS settings(
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT ''
+    )''')
     conn.commit()
 
     # Seed defaults on a brand new database
@@ -145,6 +150,125 @@ def delete_keywords(kw_type, values):
             pass
     conn.commit()
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Settings: small JSON documents (scoring profile, candidate profile).
+# ---------------------------------------------------------------------------
+
+def get_setting(key, default=None):
+    init_db()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute('SELECT value FROM settings WHERE key=?', (key,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return default
+    try:
+        return json.loads(row['value'])
+    except Exception:
+        return default
+
+
+def set_setting(key, value):
+    init_db()
+    conn = get_conn()
+    c = conn.cursor()
+    try:
+        c.execute('''INSERT INTO settings(key, value, updated_at) VALUES(?,?,?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at''',
+            (key, json.dumps(value), _now_iso()))
+        conn.commit()
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def delete_setting(key):
+    init_db()
+    conn = get_conn()
+    c = conn.cursor()
+    try:
+        c.execute('DELETE FROM settings WHERE key=?', (key,))
+        conn.commit()
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def get_scoring_profile():
+    profile = get_setting('scoring_profile')
+    return profile if isinstance(profile, dict) else None
+
+
+def save_scoring_profile(profile):
+    return set_setting('scoring_profile', profile)
+
+
+def get_candidate_profile():
+    candidate = get_setting('candidate_profile')
+    return candidate if isinstance(candidate, dict) else None
+
+
+def save_candidate_profile(candidate):
+    return set_setting('candidate_profile', candidate)
+
+
+def get_decision_reason_counts():
+    """Dismissal reasons, most common first."""
+    init_db()
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute('''SELECT reason, COUNT(*) AS n FROM decisions
+        WHERE status='dismissed' AND reason != ''
+        GROUP BY reason ORDER BY n DESC''')
+    rows = c.fetchall()
+    conn.close()
+    return {r['reason']: r['n'] for r in rows}
+
+
+def add_keywords_bulk(kw_type, values):
+    """Insert several keywords in one transaction. Returns the count attempted."""
+    if kw_type not in ('focus', 'exclude') or not isinstance(values, (list, tuple)):
+        return 0
+    init_db()
+    conn = get_conn()
+    c = conn.cursor()
+    count = 0
+    try:
+        for value in values:
+            value = (value or '').lower().strip()
+            if not value:
+                continue
+            c.execute('''INSERT INTO keywords(type, value, enabled) VALUES(?, ?, 1)
+                ON CONFLICT(type, value) DO UPDATE SET enabled=1''', (kw_type, value))
+            count += 1
+        conn.commit()
+        return count
+    except Exception:
+        return 0
+    finally:
+        conn.close()
+
+
+def replace_keywords(kw_type, values):
+    """Replace every keyword of one type. Used by the profile import."""
+    if kw_type not in ('focus', 'exclude'):
+        return 0
+    init_db()
+    conn = get_conn()
+    c = conn.cursor()
+    try:
+        c.execute('DELETE FROM keywords WHERE type=?', (kw_type,))
+        conn.commit()
+    finally:
+        conn.close()
+    return add_keywords_bulk(kw_type, values)
 
 
 def save_jobs(jobs, source):
