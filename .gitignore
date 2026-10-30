@@ -8,5 +8,9 @@ env/
 # Logs
 *.log
 
+# Local configuration / secrets
+.env
+.env.local
+
 # Legacy scraper output
 data/local_merchant_leads.json

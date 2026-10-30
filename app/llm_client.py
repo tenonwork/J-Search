@@ -1,8 +1,8 @@
 """Minimal OpenAI-compatible chat client.
 
-Works with Ollama, vLLM, llama.cpp, Groq, Together, Fireworks, OpenRouter and
-any other endpoint that implements ``POST /v1/chat/completions``. No SDK, no
-new dependency: ``requests`` is already used by the fetchers.
+Works with Ollama, Cloudflare Workers AI, Groq, OpenRouter, vLLM, llama.cpp
+and any other endpoint that implements ``POST /v1/chat/completions``. No SDK,
+no new dependency: ``requests`` is already used by the fetchers.
 
 Configuration is read from the environment on every call so the server does
 not need a restart when you point it at a different model.
@@ -10,6 +10,8 @@ not need a restart when you point it at a different model.
 
 import json
 import os
+import re
+import time
 from urllib.parse import urlparse
 
 import requests
@@ -48,14 +50,159 @@ def is_local_url(base_url):
     return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
 
 
+def provider_host(base_url):
+    """Return ``host[:port]`` for display, never including credentials."""
+    try:
+        parsed = urlparse(base_url)
+        host = (parsed.hostname or "").strip()
+        if not host:
+            return str(base_url or "the configured endpoint")
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        return host + (":" + str(port) if port else "")
+    except Exception:
+        return str(base_url or "the configured endpoint")
+
+
+def _redact_detail(text, api_key=""):
+    detail = " ".join(str(text or "").split())
+    if api_key:
+        detail = detail.replace(api_key, "[redacted]")
+    detail = re.sub(
+        r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[redacted]", detail
+    )
+    detail = re.sub(
+        r"\b(?:sk|gsk)[-_][A-Za-z0-9_-]{12,}\b",
+        "[redacted]",
+        detail,
+        flags=re.IGNORECASE,
+    )
+    return detail[:300]
+
+
+def _connection_error(config):
+    host = provider_host(config["base_url"])
+    if is_local_url(config["base_url"]):
+        return (
+            "Could not reach the local model at "
+            + host
+            + ". Is Ollama running? Start it with `ollama serve`, or configure "
+            "a hosted endpoint in .env."
+        )
+    return (
+        "Could not reach "
+        + host
+        + ". Check your internet connection and JSEARCH_LLM_BASE_URL."
+    )
+
+
+def _timeout_error(config, timeout):
+    return (
+        "The model at "
+        + provider_host(config["base_url"])
+        + " did not respond within "
+        + str(timeout)
+        + " seconds."
+    )
+
+
+def _http_error(status, detail, config):
+    host = provider_host(config["base_url"])
+    detail = _redact_detail(detail, config.get("api_key", ""))
+
+    if status in (401, 403):
+        message = "The API key was rejected by " + host + ". Check JSEARCH_LLM_API_KEY."
+    elif status == 404:
+        message = (
+            "The endpoint or model was not found. Check JSEARCH_LLM_BASE_URL "
+            "(it usually ends in /v1) and JSEARCH_LLM_MODEL."
+        )
+    elif status == 429:
+        message = "Rate limit reached at " + host + ". Wait a moment or switch models."
+    elif status >= 500:
+        message = host + " returned HTTP " + str(status) + ". Try again shortly."
+    else:
+        message = "The model returned HTTP " + str(status) + "."
+
+    if detail:
+        message += " " + detail
+    return message
+
+
+def safe_base_url(base_url):
+    """Return the endpoint with any embedded credentials removed."""
+    try:
+        parsed = urlparse(base_url)
+    except Exception:
+        return ""
+    host = (parsed.hostname or "").strip()
+    if not host:
+        return ""
+    if ":" in host and not host.startswith("["):
+        host = "[" + host + "]"
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    netloc = host + (":" + str(port) if port else "")
+    prefix = (parsed.scheme + "://") if parsed.scheme else ""
+    return prefix + netloc + parsed.path
+
+
 def public_config():
     """Safe-to-display configuration for the dashboard."""
     config = get_config()
     return {
         "configured": bool(config["base_url"] and config["model"]),
-        "base_url": config["base_url"],
+        "base_url": safe_base_url(config["base_url"]),
         "model": config["model"],
         "local": is_local_url(config["base_url"]),
+        "host": provider_host(config["base_url"]),
+        "has_api_key": bool(config["api_key"]),
+        "default_config": (
+            config["base_url"] == DEFAULT_BASE_URL
+            and config["model"] == DEFAULT_MODEL
+        ),
+    }
+
+
+def _headers(config):
+    headers = {"Content-Type": "application/json"}
+    if config["api_key"]:
+        headers["Authorization"] = "Bearer " + config["api_key"]
+    return headers
+
+
+def ping(timeout=20):
+    """Send a tiny completion to verify the endpoint, key and model.
+
+    No CV content is sent. Returns dashboard-safe details on success and
+    raises :class:`LLMError` with an actionable message on failure.
+    """
+    config = get_config()
+    if not config["base_url"] or not config["model"]:
+        raise LLMError(
+            "No model configured. Set JSEARCH_LLM_MODEL and, if needed, "
+            "JSEARCH_LLM_BASE_URL."
+        )
+
+    payload = {
+        "model": config["model"],
+        "messages": [{"role": "user", "content": "Reply with the single word OK."}],
+        "temperature": 0,
+        "max_tokens": 8,
+    }
+    started = time.perf_counter()
+    content = _post_for_content(config, payload, _headers(config), timeout=timeout)
+    latency_ms = int((time.perf_counter() - started) * 1000)
+    return {
+        "ok": True,
+        "model": config["model"],
+        "host": provider_host(config["base_url"]),
+        "latency_ms": latency_ms,
+        "reply": str(content or "").strip()[:80],
     }
 
 
@@ -80,9 +227,7 @@ def chat_json(messages, max_tokens=2000):
         "max_tokens": max_tokens,
         "response_format": {"type": "json_object"},
     }
-    headers = {"Content-Type": "application/json"}
-    if config["api_key"]:
-        headers["Authorization"] = "Bearer " + config["api_key"]
+    headers = _headers(config)
 
     content = _post_for_content(config, payload, headers)
 
@@ -106,17 +251,18 @@ def chat_json(messages, max_tokens=2000):
             raise LLMError("The model did not return valid JSON.") from exc
 
 
-def _post_for_content(config, payload, headers):
+def _post_for_content(config, payload, headers, timeout=None):
     url = config["base_url"] + "/chat/completions"
+    timeout = timeout or config["timeout"]
+
     try:
         response = requests.post(
-            url, json=payload, headers=headers, timeout=config["timeout"]
+            url, json=payload, headers=headers, timeout=timeout
         )
+    except requests.Timeout as exc:
+        raise LLMError(_timeout_error(config, timeout)) from exc
     except requests.RequestException as exc:
-        raise LLMError(
-            "Could not reach the model at "
-            f"{config['base_url']}. Is Ollama running?"
-        ) from exc
+        raise LLMError(_connection_error(config)) from exc
 
     # A few providers reject response_format. Retry once without it.
     if response.status_code == 400 and "response_format" in payload:
@@ -124,17 +270,15 @@ def _post_for_content(config, payload, headers):
         fallback.pop("response_format", None)
         try:
             response = requests.post(
-                url, json=fallback, headers=headers, timeout=config["timeout"]
+                url, json=fallback, headers=headers, timeout=timeout
             )
+        except requests.Timeout as exc:
+            raise LLMError(_timeout_error(config, timeout)) from exc
         except requests.RequestException as exc:
-            raise LLMError(f"Could not reach the model at {config['base_url']}.") from exc
+            raise LLMError(_connection_error(config)) from exc
 
     if response.status_code >= 400:
-        detail = (response.text or "").strip()[:300]
-        raise LLMError(
-            f"Model returned HTTP {response.status_code}"
-            + (f": {detail}" if detail else ".")
-        )
+        raise LLMError(_http_error(response.status_code, response.text, config))
 
     try:
         data = response.json()

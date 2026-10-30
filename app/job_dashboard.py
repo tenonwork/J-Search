@@ -390,7 +390,18 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
     .modal-lg { max-width: 720px; }
     .field-label { display: block; font-size: 12px; font-weight: 700; color: #334155; margin: 16px 0 6px 0; text-transform: uppercase; letter-spacing: 0.04em; }
     .field-hint { font-weight: 500; text-transform: none; letter-spacing: 0; color: #94a3b8; }
-    .profile-privacy { font-size: 12px; color: #64748b; margin: 14px 0 0 0; line-height: 1.5; }
+    .llm-status { display: flex; gap: 9px; align-items: flex-start; margin: 14px 0 0 0; padding: 11px 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
+    .llm-badge { flex: 0 0 auto; padding: 3px 8px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; margin-top: 1px; }
+    .llm-badge.local { background: #dcfce7; color: #166534; }
+    .llm-badge.remote { background: #fef3c7; color: #92400e; }
+    .llm-badge.unknown { background: #e2e8f0; color: #475569; }
+    .llm-copy { min-width: 0; }
+    .llm-model { font-size: 12px; font-weight: 700; color: #334155; overflow-wrap: anywhere; }
+    .llm-detail { font-size: 12px; color: #64748b; line-height: 1.5; margin-top: 2px; }
+    .llm-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-top: 8px; }
+    .llm-test-status { font-size: 12px; color: #64748b; line-height: 1.45; }
+    .llm-test-status.ok { color: #166534; }
+    .llm-test-status.error { color: #991b1b; font-weight: 600; }
     .profile-error { font-size: 13px; color: #991b1b; font-weight: 600; margin: 10px 0 0 0; min-height: 18px; }
     .profile-loading { text-align: center; padding: 44px 10px; color: #475569; font-size: 14px; }
     .spinner.small { width: 36px; height: 36px; border: 4px solid #e2e8f0; border-top-color: #2563eb; border-radius: 50%; margin: 0 auto 16px auto; animation: spin 0.9s linear infinite; }
@@ -557,6 +568,17 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
         <div class="modal-body">
             <div id="profileStepInput">
                 <p class="modal-intro">Upload a PDF, DOCX or TXT file, or paste your CV below. Nothing changes until you review and apply the proposal.</p>
+                <div class="llm-status">
+                    <span class="llm-badge unknown" id="llmBadge">Model</span>
+                    <div class="llm-copy">
+                        <div class="llm-model" id="llmTarget">Checking model configuration...</div>
+                        <div class="llm-detail" id="llmWarning"></div>
+                        <div class="llm-actions">
+                            <button class="btn btn-outline btn-sm" id="llmTestBtn" onclick="testLlm()">Test model connection</button>
+                            <span class="llm-test-status" id="llmTestStatus"></span>
+                        </div>
+                    </div>
+                </div>
                 <label class="cv-drop" id="cvDrop" for="cvFile" role="button" tabindex="0">
                     <input type="file" id="cvFile" accept=".pdf,.docx,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain">
                     <span class="cv-drop-title">Drop a CV here or <span class="cv-drop-link">browse</span></span>
@@ -568,12 +590,11 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
                 <textarea id="cvText" rows="10" placeholder="Upload a file above or paste your CV here. Contact details are removed before the model sees it."></textarea>
                 <label class="field-label" for="cvPreferences">Things to avoid <span class="field-hint">comma or newline separated</span></label>
                 <textarea id="cvPreferences" rows="3" placeholder="e.g. PHP, on-site only, staffing agencies, 24/7 on-call"></textarea>
-                <p class="profile-privacy" id="llmTarget">Checking model configuration...</p>
                 <p class="profile-error" id="profileError"></p>
             </div>
             <div id="profileStepLoading" class="profile-loading" style="display:none;">
                 <div class="spinner small"></div>
-                <p>Analysing the CV. Local models can take 30&ndash;60 seconds on CPU.</p>
+                <p>Analysing the CV. This can take 10&ndash;60 seconds depending on the model.</p>
             </div>
             <div id="profileStepReview" style="display:none;">
                 <div id="profileImpact" class="impact-box"></div>
@@ -808,6 +829,9 @@ function openProfileModal() {
     document.getElementById('profileReviewError').textContent = '';
     document.getElementById('cvFileStatus').textContent = '';
     document.getElementById('cvFileError').textContent = '';
+    document.getElementById('llmTestStatus').textContent = '';
+    document.getElementById('llmTestStatus').className = 'llm-test-status';
+    document.getElementById('llmTestBtn').disabled = false;
     document.getElementById('profileStepInput').style.display = '';
     document.getElementById('profileStepLoading').style.display = 'none';
     document.getElementById('profileStepReview').style.display = 'none';
@@ -824,18 +848,60 @@ function closeProfileModal() {
 }
 
 async function refreshLlmTarget() {
-    const el = document.getElementById('llmTarget');
+    const badge = document.getElementById('llmBadge');
+    const target = document.getElementById('llmTarget');
+    const warning = document.getElementById('llmWarning');
     try {
         const data = await api('/api/profile');
         const llm = data.llm || {};
-        if (llm.configured) {
-            el.textContent = 'Model: ' + llm.model + ' @ ' + llm.base_url +
-                (llm.local ? ' — stays on this machine.' : ' — CV text is sent to this remote endpoint.');
+        if (!llm.configured) {
+            badge.className = 'llm-badge unknown';
+            badge.textContent = 'No model';
+            target.textContent = 'No model configured.';
+            warning.textContent = 'Set JSEARCH_LLM_BASE_URL, JSEARCH_LLM_MODEL and JSEARCH_LLM_API_KEY in .env, then restart J-Search.';
+            return;
+        }
+
+        const host = llm.host || llm.base_url;
+        badge.className = 'llm-badge ' + (llm.local ? 'local' : 'remote');
+        badge.textContent = llm.local ? 'Local' : 'Remote';
+        target.textContent = 'Model: ' + llm.model + ' @ ' + host;
+
+        if (llm.local) {
+            warning.textContent = llm.default_config
+                ? 'Local default. If Ollama is not installed, set a hosted endpoint in .env.'
+                : 'CV text stays on this machine.';
         } else {
-            el.textContent = 'No model configured. Start Ollama and set JSEARCH_LLM_MODEL, or point JSEARCH_LLM_BASE_URL at an OpenAI-compatible API.';
+            warning.textContent = 'CV text is sent to ' + host +
+                '. Email, phone, URLs and handles are masked; your name, employers, education and dates are not.';
+            if (!llm.has_api_key) {
+                warning.textContent += ' No API key is set; add JSEARCH_LLM_API_KEY to .env.';
+            }
         }
     } catch (e) {
-        el.textContent = 'Could not read the model configuration.';
+        badge.className = 'llm-badge unknown';
+        badge.textContent = 'Model';
+        target.textContent = 'Could not read the model configuration.';
+        warning.textContent = '';
+    }
+}
+
+async function testLlm() {
+    const btn = document.getElementById('llmTestBtn');
+    const status = document.getElementById('llmTestStatus');
+    status.className = 'llm-test-status';
+    status.textContent = 'Testing...';
+    btn.disabled = true;
+    try {
+        const data = await api('/api/llm/test', 'POST');
+        status.className = 'llm-test-status ok';
+        status.textContent = 'Connected to ' + data.model + ' at ' + data.host +
+            ' in ' + data.latency_ms + ' ms.';
+    } catch (e) {
+        status.className = 'llm-test-status error';
+        status.textContent = e.message;
+    } finally {
+        btn.disabled = false;
     }
 }
 

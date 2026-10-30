@@ -2,7 +2,7 @@
 
 A local-first job hunting tool: it scrapes global remote feeds and East African job boards, scores every posting against a configurable keyword model, stores results in SQLite, and serves a dashboard where you filter and sort the results live — no re-scraping required.
 
-You can tune the scoring profile by hand, or import a CV (PDF, DOCX or pasted text) into the dashboard and let an optional local model propose the skills, highlight keywords, hide keywords and weights for you to review.
+You can tune the scoring profile by hand, or import a CV (PDF, DOCX or pasted text) into the dashboard and let an optional local or hosted model propose the skills, highlight keywords, hide keywords and weights for you to review.
 
 Instead of deploying blind "spray-and-pray" auto-apply bots that trigger platform bans and flood applicant tracking systems with noise, this system acts as a data gatekeeper. It pulls a deliberately oversized bundle of listings, then lets you narrow it down at your own discretion.
 
@@ -35,7 +35,7 @@ The pipeline is split into five decoupled layers:
 * **Feed parsing:** `feedparser`
 * **CV file parsing:** `pypdf` for text-based PDFs; stdlib `zipfile` + `ElementTree` for DOCX
 * **Frontend:** vanilla HTML/CSS/JS — no frameworks, no bundler
-* **Optional CV import:** any OpenAI-compatible model endpoint (Ollama by default), called with `requests`
+* **Optional CV import:** any OpenAI-compatible model endpoint, local or hosted (Ollama by default; configure a hosted provider in `.env`), called with `requests`
 
 ## Data Sources
 
@@ -99,7 +99,7 @@ The **Import from CV** button opens a review-gated profile builder:
 
 1. Upload a PDF or DOCX (or paste text) and, optionally, a free-text list of things to avoid.
 2. The file is parsed locally and in memory — the upload is never written to disk or logged. The extracted text lands in the textarea so it can be reviewed or edited before analysis.
-3. Contact details (email, phone, URLs, handles) are masked before the text is sent to the model.
+3. Contact details (email, phone, URLs, handles) are masked before the text is sent to the configured model. If the model is remote, the dashboard says so before analysis.
 4. The model returns only allow-listed skills with evidence snippets. Unknown, unevidenced or generic terms are dropped.
 5. The dashboard shows the proposed scoring profile, highlight keywords, hide keywords and an impact preview (`N visible now → M after applying`).
 6. No scoring or keyword changes are written until **Apply selected**. Applying saves the scoring profile and adds the selected keywords; existing keywords are not deleted.
@@ -108,13 +108,46 @@ The CV is treated as untrusted data: it is delimited in the prompt, the model ha
 
 ### Model setup
 
-The client speaks the OpenAI-compatible `/v1/chat/completions` protocol, so it works with Ollama, vLLM, llama.cpp, Groq, Together, Fireworks, OpenRouter and similar endpoints.
+The client speaks the OpenAI-compatible `/v1/chat/completions` protocol. Ollama is the default, but **you do not need a local model**; any hosted provider that implements the same API works.
+
+#### Option A: hosted (no local model)
+
+[Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/) is the recommended hosted option for CV import:
+
+- Free allocation of 10,000 Neurons per day, which is enough for personal use.
+- Zero data retention for standard inference requests.
+- Cloudflare does not train on customer content.
+
+1. Copy `.env.example` to `.env` in the project root.
+2. Fill in your Cloudflare **Account ID** and an API token with **Account → Workers AI → Read** permission:
+   ```dotenv
+   JSEARCH_LLM_BASE_URL=https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1
+   JSEARCH_LLM_MODEL=@cf/openai/gpt-oss-20b
+   JSEARCH_LLM_API_KEY=<CLOUDFLARE_API_TOKEN>
+   JSEARCH_LLM_TIMEOUT=120
+   ```
+3. Restart `python run.py`.
+
+`.env` is gitignored, and real environment variables override its values. It is plaintext, so use a scoped token and rotate it if it is ever exposed. The dashboard shows a **Remote** badge and can test the connection before you analyse a CV; the test sends only a short "Reply with OK" prompt, never CV content.
+
+**Groq** is a fast, low-cost alternative:
+
+```dotenv
+JSEARCH_LLM_BASE_URL=https://api.groq.com/openai/v1
+JSEARCH_LLM_MODEL=openai/gpt-oss-20b
+JSEARCH_LLM_API_KEY=<GROQ_API_KEY>
+```
+
+**Privacy:** the CV text leaves your machine when you use a hosted provider. J-Search masks email, phone, URLs and handles, but **not** your name, employers, education or dates. Cloudflare's zero-retention/no-training policy is why it is the recommendation. Review the extracted text before clicking **Analyse CV**.
+
+#### Option B: local Ollama
 
 ```bash
-# Local, private default
 ollama pull qwen2.5:7b-instruct
 ollama serve
 ```
+
+No `.env` is needed for the local default.
 
 | Variable | Default | Purpose |
 | :-- | :-- | :-- |
@@ -123,7 +156,7 @@ ollama serve
 | `JSEARCH_LLM_API_KEY` | empty | Bearer token for remote providers |
 | `JSEARCH_LLM_TIMEOUT` | `90` | Request timeout in seconds |
 
-If the endpoint is unreachable, the import fails with a clear message. It never silently falls back to a remote provider.
+If the endpoint is unreachable, the import fails with a provider-aware message. It never silently falls back to a different provider.
 
 ## Application Tracker
 
@@ -148,6 +181,7 @@ If the endpoint is unreachable, the import fails with a clear message. It never 
 | `/api/keywords/state` | POST | `{"type": "...", "states": {"keyword": true\|false}}` — pause/enable without deleting |
 | `/api/keywords/delete` | POST | `{"type": "...", "values": ["..."]}` |
 | `/api/profile` | GET | Saved scoring profile, candidate profile, dismissal counts and model configuration |
+| `/api/llm/test` | POST | Send a tiny, CV-free prompt to verify the configured endpoint, key and model |
 | `/api/profile/extract` | POST | Raw PDF/DOCX/TXT body (max 10 MB) — extracted text for review; nothing is stored |
 | `/api/profile/analyze` | POST | `{"cv_text": "...", "preferences": "..."}` — validated proposal plus impact preview; saves only the structured candidate profile |
 | `/api/profile/preview` | POST | `{"profile": {...}, "focus": [...], "exclude": [...]}` — impact preview without saving |
@@ -185,8 +219,10 @@ pip install -r requirements.txt
 ```text
 ├── run.py                           # HTTP server, pipeline orchestration, API routes
 ├── requirements.txt                 # Runtime dependencies
+├── .env.example                     # Hosted/local model configuration template
 ├── app/
 │   ├── paths.py                     # Project paths (database, generated output)
+│   ├── env.py                       # Dependency-free .env loader
 │   ├── db.py                        # SQLite layer (keywords, jobs, decisions, settings)
 │   ├── job_dashboard.py             # Scoring engine, presets, dashboard template
 │   ├── cv_profile.py                # CV scrubbing, validation, profile proposal
@@ -200,7 +236,9 @@ pip install -r requirements.txt
 │   └── fetch_local_merchants.py     # Local Kenyan board scrapers
 ├── tests/
 │   ├── test_profile.py              # Stdlib unittest suite for the profile pipeline
-│   └── test_cv_import.py            # PDF/DOCX/TXT extraction and limit tests
+│   ├── test_cv_import.py            # PDF/DOCX/TXT extraction and limit tests
+│   ├── test_env.py                  # .env parsing and precedence tests
+│   └── test_llm_client.py           # Config redaction and model error tests
 ├── legacy/
 │   └── local_directory_scraper.py   # Legacy Playwright scraper (not used by the pipeline)
 ├── data/
@@ -217,6 +255,8 @@ python run.py
 
 The server starts on `http://localhost:8765` and opens your default browser. It binds to `127.0.0.1` by default because the CV importer handles personal data; set `JSEARCH_HOST=0.0.0.0` if you deliberately want LAN access. Pick your keywords, then use a run button to scrape. Results and your applied/hidden decisions are stored in SQLite, so restarting the server does not lose them.
 
+To use a hosted model instead of Ollama, copy `.env.example` to `.env`, fill in the provider block and restart the server.
+
 ```bash
 python -m unittest discover -s tests -v
 ```
@@ -229,8 +269,8 @@ python -m unittest discover -s tests -v
 * Job identity is the normalised URL (host + path). A reposted job with a new slug/URL will reappear, the same role listed on two sources with different URLs is treated as two jobs, and boards that put the job ID only in query parameters can collide.
 * Decisions live in `data/jsearch.db`; deleting the database deletes the application history.
 * Keyword changes affect visibility only. The scoring profile (core skills, AI skills, weights, dealbreakers) is edited through the CV import review or the settings API, not by the keyword manager.
-* CV import accepts text-based PDFs, DOCX, TXT and Markdown. Scanned/image-only PDFs and legacy `.doc` files are not supported; scanned CVs would need OCR. Two-column PDF layouts can scramble reading order, so review the extracted text before analysing. The candidate's name is not masked — only email, phone, URLs and handles are — so prefer the local Ollama default when the CV contains sensitive details.
-* CV extraction quality depends on the model. A 7B-class local model handles obvious stacks well but is weaker on nuance. Every proposal is validated against the taxonomy and must be reviewed before it is applied.
+* CV import accepts text-based PDFs, DOCX, TXT and Markdown. Scanned/image-only PDFs and legacy `.doc` files are not supported; scanned CVs would need OCR. Two-column PDF layouts can scramble reading order, so review the extracted text before analysing. The candidate's name is not masked — only email, phone, URLs and handles are — so use a zero-retention, no-training provider (Cloudflare Workers AI) or a local model when the CV contains sensitive details.
+* CV extraction quality depends on the model. Small local models handle obvious stacks well but are weaker on nuance; hosted models vary. Every proposal is validated against the taxonomy and must be reviewed before it is applied.
 * Everything is single-user and local. There is no authentication. The server binds to `127.0.0.1` by default; `JSEARCH_HOST=0.0.0.0` exposes the CV import endpoint to the LAN.
 
 ## Roadmap

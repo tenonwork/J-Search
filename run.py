@@ -25,8 +25,12 @@ from app.job_dashboard import (
     job_key, passes_filters, effective_profile,
 )
 from app.applied_page import build_decisions_page
+from app.env import load_dotenv
 from app.paths import DASHBOARD_PATH
 from app import cv_import, cv_profile, db, llm_client
+
+# Load local model/provider configuration before reading the host settings.
+load_dotenv()
 
 PORT = 8765
 HOST = os.environ.get('JSEARCH_HOST', '127.0.0.1')
@@ -446,6 +450,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         self._respond_json(200, result)
 
+    def _handle_llm_test(self):
+        """Verify the configured model with a tiny, CV-free prompt."""
+        try:
+            result = llm_client.ping()
+        except llm_client.LLMError as exc:
+            self._respond_json(502, {'error': str(exc)})
+            return
+        except Exception:
+            self._respond_json(500, {'error': 'Could not test the model connection.'})
+            return
+        self._respond_json(200, result)
+
     def _serve_decisions_page(self, status):
         try:
             decisions = db.get_decisions(status)
@@ -669,6 +685,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._respond(200, json.dumps(payload).encode('utf-8'), 'application/json')
         elif path == '/api/profile/extract':
             self._handle_profile_extract()
+        elif path == '/api/llm/test':
+            self._handle_llm_test()
         elif path == '/api/profile/analyze':
             self._handle_profile_analyze()
         elif path == '/api/profile/preview':
