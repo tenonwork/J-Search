@@ -2,7 +2,7 @@
 
 A local-first job hunting tool: it scrapes global remote feeds and East African job boards, scores every posting against a configurable keyword model, stores results in SQLite, and serves a dashboard where you filter and sort the results live — no re-scraping required.
 
-You can tune the scoring profile by hand or paste a CV into the dashboard and let an optional local model propose the skills, highlight keywords, hide keywords and weights for you to review.
+You can tune the scoring profile by hand, or import a CV (PDF, DOCX or pasted text) into the dashboard and let an optional local model propose the skills, highlight keywords, hide keywords and weights for you to review.
 
 Instead of deploying blind "spray-and-pray" auto-apply bots that trigger platform bans and flood applicant tracking systems with noise, this system acts as a data gatekeeper. It pulls a deliberately oversized bundle of listings, then lets you narrow it down at your own discretion.
 
@@ -33,6 +33,7 @@ The pipeline is split into five decoupled layers:
 * **HTTP client:** `requests`
 * **HTML parsing:** `BeautifulSoup` (`bs4`) with the stdlib `html.parser`
 * **Feed parsing:** `feedparser`
+* **CV file parsing:** `pypdf` for text-based PDFs; stdlib `zipfile` + `ElementTree` for DOCX
 * **Frontend:** vanilla HTML/CSS/JS — no frameworks, no bundler
 * **Optional CV import:** any OpenAI-compatible model endpoint (Ollama by default), called with `requests`
 
@@ -96,13 +97,14 @@ Presets are applied in the browser by the strictness toggle; the server scores e
 
 The **Import from CV** button opens a review-gated profile builder:
 
-1. Paste CV text and, optionally, a free-text list of things to avoid.
-2. Contact details (email, phone, URLs, handles) are masked before the text is sent to the model.
-3. The model returns only allow-listed skills with evidence snippets. Unknown, unevidenced or generic terms are dropped.
-4. The dashboard shows the proposed scoring profile, highlight keywords, hide keywords and an impact preview (`N visible now → M after applying`).
-5. No scoring or keyword changes are written until **Apply selected**. Applying saves the scoring profile and adds the selected keywords; existing keywords are not deleted.
+1. Upload a PDF or DOCX (or paste text) and, optionally, a free-text list of things to avoid.
+2. The file is parsed locally and in memory — the upload is never written to disk or logged. The extracted text lands in the textarea so it can be reviewed or edited before analysis.
+3. Contact details (email, phone, URLs, handles) are masked before the text is sent to the model.
+4. The model returns only allow-listed skills with evidence snippets. Unknown, unevidenced or generic terms are dropped.
+5. The dashboard shows the proposed scoring profile, highlight keywords, hide keywords and an impact preview (`N visible now → M after applying`).
+6. No scoring or keyword changes are written until **Apply selected**. Applying saves the scoring profile and adds the selected keywords; existing keywords are not deleted.
 
-The CV is treated as untrusted data: it is delimited in the prompt, the model has no tools, and the output is validated against `app/skills_taxonomy.json`. The structured candidate profile is stored in `settings`; the raw CV is not persisted.
+The CV is treated as untrusted data: it is delimited in the prompt, the model has no tools, and the output is validated against `app/skills_taxonomy.json`. The structured candidate profile is stored in `settings`; the raw CV and uploaded file are not persisted. Text-based PDFs are limited to the first 40 pages and 20,000 characters; scanned PDFs and legacy `.doc` files are rejected with a clear message.
 
 ### Model setup
 
@@ -146,6 +148,7 @@ If the endpoint is unreachable, the import fails with a clear message. It never 
 | `/api/keywords/state` | POST | `{"type": "...", "states": {"keyword": true\|false}}` — pause/enable without deleting |
 | `/api/keywords/delete` | POST | `{"type": "...", "values": ["..."]}` |
 | `/api/profile` | GET | Saved scoring profile, candidate profile, dismissal counts and model configuration |
+| `/api/profile/extract` | POST | Raw PDF/DOCX/TXT body (max 10 MB) — extracted text for review; nothing is stored |
 | `/api/profile/analyze` | POST | `{"cv_text": "...", "preferences": "..."}` — validated proposal plus impact preview; saves only the structured candidate profile |
 | `/api/profile/preview` | POST | `{"profile": {...}, "focus": [...], "exclude": [...]}` — impact preview without saving |
 | `/api/profile/apply` | POST | Same payload as preview; persists the profile and adds keywords. Optional `"mode": "replace"` replaces both keyword lists |
@@ -187,6 +190,7 @@ pip install -r requirements.txt
 │   ├── db.py                        # SQLite layer (keywords, jobs, decisions, settings)
 │   ├── job_dashboard.py             # Scoring engine, presets, dashboard template
 │   ├── cv_profile.py                # CV scrubbing, validation, profile proposal
+│   ├── cv_import.py                 # Local PDF/DOCX/TXT text extraction for uploads
 │   ├── llm_client.py                # OpenAI-compatible chat client
 │   ├── skills_taxonomy.json         # Allow-listed skills, aliases, generic blocklist
 │   └── applied_page.py              # Applied and hidden tracker page templates
@@ -195,7 +199,8 @@ pip install -r requirements.txt
 │   ├── fetch_rss_jobs.py            # Global RSS feeds
 │   └── fetch_local_merchants.py     # Local Kenyan board scrapers
 ├── tests/
-│   └── test_profile.py              # Stdlib unittest suite for the profile pipeline
+│   ├── test_profile.py              # Stdlib unittest suite for the profile pipeline
+│   └── test_cv_import.py            # PDF/DOCX/TXT extraction and limit tests
 ├── legacy/
 │   └── local_directory_scraper.py   # Legacy Playwright scraper (not used by the pipeline)
 ├── data/
@@ -224,7 +229,7 @@ python -m unittest discover -s tests -v
 * Job identity is the normalised URL (host + path). A reposted job with a new slug/URL will reappear, the same role listed on two sources with different URLs is treated as two jobs, and boards that put the job ID only in query parameters can collide.
 * Decisions live in `data/jsearch.db`; deleting the database deletes the application history.
 * Keyword changes affect visibility only. The scoring profile (core skills, AI skills, weights, dealbreakers) is edited through the CV import review or the settings API, not by the keyword manager.
-* CV import accepts pasted text only. PDF and DOCX files are not parsed yet; scanned PDFs would need OCR. The candidate's name is not masked — only email, phone, URLs and handles are — so prefer the local Ollama default when the CV contains sensitive details.
+* CV import accepts text-based PDFs, DOCX, TXT and Markdown. Scanned/image-only PDFs and legacy `.doc` files are not supported; scanned CVs would need OCR. Two-column PDF layouts can scramble reading order, so review the extracted text before analysing. The candidate's name is not masked — only email, phone, URLs and handles are — so prefer the local Ollama default when the CV contains sensitive details.
 * CV extraction quality depends on the model. A 7B-class local model handles obvious stacks well but is weaker on nuance. Every proposal is validated against the taxonomy and must be reviewed before it is applied.
 * Everything is single-user and local. There is no authentication. The server binds to `127.0.0.1` by default; `JSEARCH_HOST=0.0.0.0` exposes the CV import endpoint to the LAN.
 
@@ -232,7 +237,8 @@ python -m unittest discover -s tests -v
 
 - [ ] **Keyword-driven queries:** feed highlight keywords into DuckDuckGo/BrighterMonday search URLs so filters shape the scrape, not just the view.
 - [x] **Editable scoring profile:** core/AI skill weights and dealbreakers can be reviewed and edited during CV import, then saved to `settings`.
-- [ ] **PDF/DOCX CV parsing:** extract text from uploaded files instead of requiring paste; OCR for scanned CVs last.
+- [x] **PDF/DOCX CV parsing:** extract text from uploaded files instead of requiring paste.
+- [ ] **OCR for scanned CVs:** read image-only PDFs; keep this last because it adds a heavy dependency.
 - [ ] **Candidate profile editor:** show and edit the stored candidate profile without re-running the model.
 - [ ] **Saved searches / history:** keep past result sets to compare listings across runs.
 - [ ] **AI-assisted summaries:** optional local LLM pass, behind a review gate, to condense long descriptions into three bullet points on each card.

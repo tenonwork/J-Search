@@ -418,6 +418,15 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
     .profile-notes { margin: 0; padding-left: 20px; font-size: 13px; color: #64748b; line-height: 1.6; }
     .profile-mode { margin: 0 0 16px 0; font-size: 12px; font-weight: 600; color: #475569; }
     .profile-mode select { margin-left: 8px; }
+    .cv-drop { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 18px 16px; margin: 4px 0 0 0; border: 1.5px dashed #cbd5e1; border-radius: 10px; background: #f8fafc; text-align: center; cursor: pointer; transition: border-color 0.15s, background 0.15s; }
+    .cv-drop:hover, .cv-drop:focus-visible, .cv-drop.dragover { border-color: #2563eb; background: #eff6ff; outline: none; }
+    .cv-drop.busy { opacity: 0.6; pointer-events: none; }
+    .cv-drop input[type="file"] { display: none; }
+    .cv-drop-title { font-size: 13px; font-weight: 600; color: #334155; }
+    .cv-drop-link { color: #2563eb; text-decoration: underline; }
+    .cv-drop-hint { font-size: 11px; color: #64748b; }
+    .cv-file-status { min-height: 17px; margin: 7px 0 0 0; font-size: 12px; color: #166534; line-height: 1.45; }
+    .cv-file-error { margin: 4px 0 0 0; font-size: 12px; color: #991b1b; font-weight: 600; line-height: 1.45; }
 </style>
 </head>
 <body>
@@ -547,9 +556,16 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
         </div>
         <div class="modal-body">
             <div id="profileStepInput">
-                <p class="modal-intro">Paste your CV and list anything you want to avoid. Nothing changes until you review and apply the proposal.</p>
+                <p class="modal-intro">Upload a PDF, DOCX or TXT file, or paste your CV below. Nothing changes until you review and apply the proposal.</p>
+                <label class="cv-drop" id="cvDrop" for="cvFile" role="button" tabindex="0">
+                    <input type="file" id="cvFile" accept=".pdf,.docx,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain">
+                    <span class="cv-drop-title">Drop a CV here or <span class="cv-drop-link">browse</span></span>
+                    <span class="cv-drop-hint">PDF, DOCX or TXT &middot; up to 10 MB &middot; read on this machine, never stored</span>
+                </label>
+                <p class="cv-file-status" id="cvFileStatus"></p>
+                <p class="cv-file-error" id="cvFileError"></p>
                 <label class="field-label" for="cvText">CV text</label>
-                <textarea id="cvText" rows="10" placeholder="Paste your CV here. Contact details are removed before the model sees it."></textarea>
+                <textarea id="cvText" rows="10" placeholder="Upload a file above or paste your CV here. Contact details are removed before the model sees it."></textarea>
                 <label class="field-label" for="cvPreferences">Things to avoid <span class="field-hint">comma or newline separated</span></label>
                 <textarea id="cvPreferences" rows="3" placeholder="e.g. PHP, on-site only, staffing agencies, 24/7 on-call"></textarea>
                 <p class="profile-privacy" id="llmTarget">Checking model configuration...</p>
@@ -790,6 +806,8 @@ function openProfileModal() {
     profileProposal = null;
     document.getElementById('profileError').textContent = '';
     document.getElementById('profileReviewError').textContent = '';
+    document.getElementById('cvFileStatus').textContent = '';
+    document.getElementById('cvFileError').textContent = '';
     document.getElementById('profileStepInput').style.display = '';
     document.getElementById('profileStepLoading').style.display = 'none';
     document.getElementById('profileStepReview').style.display = 'none';
@@ -821,13 +839,90 @@ async function refreshLlmTarget() {
     }
 }
 
+const CV_MAX_BYTES = 10 * 1024 * 1024;
+
+function setupCvDrop() {
+    const drop = document.getElementById('cvDrop');
+    const input = document.getElementById('cvFile');
+
+    input.addEventListener('change', () => {
+        const file = input.files && input.files[0];
+        if (file) extractCvFile(file);
+    });
+
+    ['dragenter', 'dragover'].forEach(name => {
+        drop.addEventListener(name, e => {
+            e.preventDefault();
+            drop.classList.add('dragover');
+        });
+    });
+
+    drop.addEventListener('dragleave', () => drop.classList.remove('dragover'));
+
+    drop.addEventListener('drop', e => {
+        e.preventDefault();
+        drop.classList.remove('dragover');
+        const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+        if (file) extractCvFile(file);
+    });
+
+    drop.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            input.click();
+        }
+    });
+}
+
+async function extractCvFile(file) {
+    const errorEl = document.getElementById('cvFileError');
+    const statusEl = document.getElementById('cvFileStatus');
+    const drop = document.getElementById('cvDrop');
+    document.getElementById('profileError').textContent = '';
+    errorEl.textContent = '';
+    statusEl.textContent = '';
+
+    const name = file.name || 'CV';
+    if (file.size > CV_MAX_BYTES) {
+        errorEl.textContent = 'That file is larger than 10 MB.';
+        return;
+    }
+
+    document.getElementById('cvText').value = '';
+    drop.classList.add('busy');
+    statusEl.textContent = 'Reading ' + name + '...';
+    try {
+        const res = await fetch('/api/profile/extract', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body: file
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error((data && data.error) || ('HTTP ' + res.status));
+
+        document.getElementById('cvText').value = data.text || '';
+        const pages = data.pages
+            ? ' (' + data.pages + ' page' + (data.pages === 1 ? '' : 's') + ')'
+            : '';
+        let message = 'Extracted text from ' + name + pages + '. Review it before analysing.';
+        (data.warnings || []).forEach(warning => { message += ' ' + warning; });
+        statusEl.textContent = message;
+    } catch (e) {
+        statusEl.textContent = '';
+        errorEl.textContent = e.message;
+    } finally {
+        drop.classList.remove('busy');
+        document.getElementById('cvFile').value = '';
+    }
+}
+
 async function analyzeCv() {
     const cv = document.getElementById('cvText').value.trim();
     const preferences = document.getElementById('cvPreferences').value.trim();
     const errorEl = document.getElementById('profileError');
     errorEl.textContent = '';
     if (cv.length < 40) {
-        errorEl.textContent = 'Paste a few lines of your CV first.';
+        errorEl.textContent = 'Add a few lines of your CV first.';
         document.getElementById('cvText').focus();
         return;
     }
@@ -1281,6 +1376,7 @@ document.getElementById('profileSections').addEventListener('input', e => {
     if (e.target.type === 'number') schedulePreview();
 });
 
+setupCvDrop();
 loadKeywords();
 </script>
 </body>

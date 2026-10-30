@@ -26,7 +26,7 @@ from app.job_dashboard import (
 )
 from app.applied_page import build_decisions_page
 from app.paths import DASHBOARD_PATH
-from app import cv_profile, db, llm_client
+from app import cv_import, cv_profile, db, llm_client
 
 PORT = 8765
 HOST = os.environ.get('JSEARCH_HOST', '127.0.0.1')
@@ -403,6 +403,49 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    def _read_raw_body(self, limit):
+        """Read a binary request body, refusing anything above ``limit``.
+
+        Returns ``(body, error)`` where ``error`` is one of ``empty``,
+        ``too_large`` or ``invalid``.
+        """
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+        except (TypeError, ValueError):
+            return None, 'invalid'
+        if length <= 0:
+            return None, 'empty'
+        if length > limit:
+            return None, 'too_large'
+        try:
+            return self.rfile.read(length), None
+        except OSError:
+            return None, 'invalid'
+
+    def _handle_profile_extract(self):
+        body, error = self._read_raw_body(cv_import.MAX_UPLOAD_BYTES)
+        if error == 'too_large':
+            self._respond_json(413, {'error': 'That file is larger than 10 MB.'})
+            return
+        if error == 'empty':
+            self._respond_json(400, {'error': 'Choose a PDF, DOCX or TXT file first.'})
+            return
+        if error:
+            self._respond_json(400, {'error': 'Could not read that upload.'})
+            return
+
+        try:
+            result = cv_import.extract_text(body)
+        except cv_import.ExtractError as exc:
+            self._respond_json(400, {'error': str(exc)})
+            return
+        except Exception:
+            # Never include parser details or file content in the response.
+            self._respond_json(500, {'error': 'Could not read that file.'})
+            return
+
+        self._respond_json(200, result)
+
     def _serve_decisions_page(self, status):
         try:
             decisions = db.get_decisions(status)
@@ -624,6 +667,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             payload = {'status': 'ok'}
             payload.update(_decision_counts())
             self._respond(200, json.dumps(payload).encode('utf-8'), 'application/json')
+        elif path == '/api/profile/extract':
+            self._handle_profile_extract()
         elif path == '/api/profile/analyze':
             self._handle_profile_analyze()
         elif path == '/api/profile/preview':
