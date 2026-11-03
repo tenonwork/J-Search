@@ -31,6 +31,7 @@ def get_config():
         "model": os.environ.get("JSEARCH_LLM_MODEL", DEFAULT_MODEL).strip(),
         "api_key": os.environ.get("JSEARCH_LLM_API_KEY", "").strip(),
         "timeout": _int_env("JSEARCH_LLM_TIMEOUT", 90, 5, 600),
+        "max_tokens": _int_env("JSEARCH_LLM_MAX_TOKENS", 4096, 256, 16384),
     }
 
 
@@ -131,6 +132,27 @@ def _http_error(status, detail, config):
     return message
 
 
+def _length_error(max_tokens):
+    return (
+        "The model ran out of output tokens before finishing. Increase "
+        "JSEARCH_LLM_MAX_TOKENS (currently "
+        + str(max_tokens)
+        + ") or use a shorter CV."
+    )
+
+
+def _empty_content_error(config, finish_reason):
+    message = (
+        "The model at "
+        + provider_host(config["base_url"])
+        + " returned an empty final answer. Try again, increase "
+        "JSEARCH_LLM_MAX_TOKENS, or switch models."
+    )
+    if finish_reason:
+        message += " (finish reason: " + str(finish_reason) + ")"
+    return message
+
+
 def safe_base_url(base_url):
     """Return the endpoint with any embedded credentials removed."""
     try:
@@ -175,6 +197,20 @@ def _headers(config):
     return headers
 
 
+def _json_mode_enabled(config):
+    """Return whether to ask the provider for a forced JSON object.
+
+    gpt-oss models can return HTTP 200 with empty content when JSON mode is
+    enabled, so they use prompt-only JSON plus the parser instead.
+    """
+    override = os.environ.get("JSEARCH_LLM_JSON_MODE", "").strip().lower()
+    if override in ("0", "false", "no", "off"):
+        return False
+    if override in ("1", "true", "yes", "on"):
+        return True
+    return "gpt-oss" not in str(config.get("model", "")).lower()
+
+
 def ping(timeout=20):
     """Send a tiny completion to verify the endpoint, key and model.
 
@@ -195,22 +231,23 @@ def ping(timeout=20):
         "max_tokens": 8,
     }
     started = time.perf_counter()
-    content = _post_for_content(config, payload, _headers(config), timeout=timeout)
+    result, _ = _post_chat(config, payload, _headers(config), timeout=timeout)
     latency_ms = int((time.perf_counter() - started) * 1000)
     return {
         "ok": True,
         "model": config["model"],
         "host": provider_host(config["base_url"]),
         "latency_ms": latency_ms,
-        "reply": str(content or "").strip()[:80],
+        "reply": result["content"].strip()[:80],
     }
 
 
-def chat_json(messages, max_tokens=2000):
+def chat_json(messages, max_tokens=None):
     """Send chat messages and return the parsed JSON object.
 
     The model is asked for a JSON object. If it wraps the object in markdown
-    or prose, the first balanced-looking object is extracted. One repair
+    or prose, the first balanced-looking object is extracted. JSON mode is
+    skipped for models that return empty content with it, and one repair
     attempt is made when parsing fails.
     """
     config = get_config()
@@ -220,22 +257,30 @@ def chat_json(messages, max_tokens=2000):
             "JSEARCH_LLM_BASE_URL."
         )
 
+    budget = config["max_tokens"] if max_tokens is None else max_tokens
     payload = {
         "model": config["model"],
         "messages": messages,
         "temperature": 0,
-        "max_tokens": max_tokens,
-        "response_format": {"type": "json_object"},
+        "max_tokens": budget,
     }
+    if _json_mode_enabled(config):
+        payload["response_format"] = {"type": "json_object"}
     headers = _headers(config)
 
-    content = _post_for_content(config, payload, headers)
+    result, used_payload = _request_with_format_fallback(config, payload, headers)
+    if not result["content"].strip():
+        if result["finish_reason"] == "length":
+            raise LLMError(_length_error(budget))
+        raise LLMError(_empty_content_error(config, result["finish_reason"]))
 
     try:
-        return _parse_json(content)
+        return _parse_json(result["content"])
     except ValueError:
+        if result["finish_reason"] == "length":
+            raise LLMError(_length_error(budget))
         repair = list(messages) + [
-            {"role": "assistant", "content": str(content)[:4000]},
+            {"role": "assistant", "content": str(result["content"])[:4000]},
             {
                 "role": "user",
                 "content": (
@@ -244,45 +289,54 @@ def chat_json(messages, max_tokens=2000):
                 ),
             },
         ]
-        repaired = _post_for_content(config, dict(payload, messages=repair), headers)
+        repaired, _ = _request_with_format_fallback(
+            config, dict(used_payload, messages=repair), headers
+        )
+        if not repaired["content"].strip():
+            if repaired["finish_reason"] == "length":
+                raise LLMError(_length_error(budget))
+            raise LLMError(_empty_content_error(config, repaired["finish_reason"]))
         try:
-            return _parse_json(repaired)
+            return _parse_json(repaired["content"])
         except ValueError as exc:
+            if repaired["finish_reason"] == "length":
+                raise LLMError(_length_error(budget)) from exc
             raise LLMError("The model did not return valid JSON.") from exc
 
 
-def _post_for_content(config, payload, headers, timeout=None):
-    url = config["base_url"] + "/chat/completions"
-    timeout = timeout or config["timeout"]
-
+def _request(config, url, payload, headers, timeout):
     try:
-        response = requests.post(
-            url, json=payload, headers=headers, timeout=timeout
-        )
+        return requests.post(url, json=payload, headers=headers, timeout=timeout)
     except requests.Timeout as exc:
         raise LLMError(_timeout_error(config, timeout)) from exc
     except requests.RequestException as exc:
         raise LLMError(_connection_error(config)) from exc
 
+
+def _post_chat(config, payload, headers, timeout=None):
+    """POST one chat request and return its content, metadata and payload."""
+    url = config["base_url"] + "/chat/completions"
+    timeout = timeout or config["timeout"]
+    used_payload = payload
+
+    response = _request(config, url, payload, headers, timeout)
+
     # A few providers reject response_format. Retry once without it.
     if response.status_code == 400 and "response_format" in payload:
-        fallback = dict(payload)
-        fallback.pop("response_format", None)
-        try:
-            response = requests.post(
-                url, json=fallback, headers=headers, timeout=timeout
-            )
-        except requests.Timeout as exc:
-            raise LLMError(_timeout_error(config, timeout)) from exc
-        except requests.RequestException as exc:
-            raise LLMError(_connection_error(config)) from exc
+        used_payload = dict(payload)
+        used_payload.pop("response_format", None)
+        response = _request(config, url, used_payload, headers, timeout)
 
     if response.status_code >= 400:
         raise LLMError(_http_error(response.status_code, response.text, config))
 
     try:
         data = response.json()
-        content = data["choices"][0]["message"]["content"]
+        choice = data["choices"][0]
+        message = choice["message"]
+        content = message.get("content") or ""
+        finish_reason = choice.get("finish_reason")
+        usage = data.get("usage") or {}
     except (ValueError, KeyError, IndexError, TypeError) as exc:
         raise LLMError("Unexpected response shape from the model.") from exc
 
@@ -291,7 +345,21 @@ def _post_for_content(config, payload, headers, timeout=None):
         content = "".join(
             part.get("text", "") for part in content if isinstance(part, dict)
         )
-    return content
+    return {
+        "content": str(content or ""),
+        "finish_reason": finish_reason,
+        "usage": usage,
+    }, used_payload
+
+
+def _request_with_format_fallback(config, payload, headers):
+    """Retry without JSON mode when a model returns an empty answer."""
+    result, used_payload = _post_chat(config, payload, headers)
+    if not result["content"].strip() and "response_format" in used_payload:
+        fallback = dict(used_payload)
+        fallback.pop("response_format", None)
+        result, used_payload = _post_chat(config, fallback, headers)
+    return result, used_payload
 
 
 def _parse_json(content):

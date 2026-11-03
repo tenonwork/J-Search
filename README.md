@@ -125,8 +125,11 @@ The client speaks the OpenAI-compatible `/v1/chat/completions` protocol. Ollama 
    JSEARCH_LLM_MODEL=@cf/openai/gpt-oss-20b
    JSEARCH_LLM_API_KEY=<CLOUDFLARE_API_TOKEN>
    JSEARCH_LLM_TIMEOUT=120
+   JSEARCH_LLM_MAX_TOKENS=4096
    ```
 3. Restart `python run.py`.
+
+`gpt-oss` is a reasoning model. J-Search deliberately skips forced JSON mode for it because some OpenAI-compatible servers return HTTP 200 with empty content when JSON mode is enabled; the prompt still asks for JSON and the parser extracts it. If an analysis is cut off, raise `JSEARCH_LLM_MAX_TOKENS`. For other providers with a broken JSON mode, set `JSEARCH_LLM_JSON_MODE=0`.
 
 `.env` is gitignored, and real environment variables override its values. It is plaintext, so use a scoped token and rotate it if it is ever exposed. The dashboard shows a **Remote** badge and can test the connection before you analyse a CV; the test sends only a short "Reply with OK" prompt, never CV content.
 
@@ -155,6 +158,8 @@ No `.env` is needed for the local default.
 | `JSEARCH_LLM_MODEL` | `qwen2.5:7b-instruct` | Model name understood by that endpoint |
 | `JSEARCH_LLM_API_KEY` | empty | Bearer token for remote providers |
 | `JSEARCH_LLM_TIMEOUT` | `90` | Request timeout in seconds |
+| `JSEARCH_LLM_MAX_TOKENS` | `4096` | Output budget per CV analysis |
+| `JSEARCH_LLM_JSON_MODE` | auto | `0` forces prompt-only JSON; gpt-oss models skip JSON mode automatically |
 
 If the endpoint is unreachable, the import fails with a provider-aware message. It never silently falls back to a different provider.
 
@@ -271,6 +276,7 @@ python -m unittest discover -s tests -v
 * Keyword changes affect visibility only. The scoring profile (core skills, AI skills, weights, dealbreakers) is edited through the CV import review or the settings API, not by the keyword manager.
 * CV import accepts text-based PDFs, DOCX, TXT and Markdown. Scanned/image-only PDFs and legacy `.doc` files are not supported; scanned CVs would need OCR. Two-column PDF layouts can scramble reading order, so review the extracted text before analysing. The candidate's name is not masked — only email, phone, URLs and handles are — so use a zero-retention, no-training provider (Cloudflare Workers AI) or a local model when the CV contains sensitive details.
 * CV extraction quality depends on the model. Small local models handle obvious stacks well but are weaker on nuance; hosted models vary. Every proposal is validated against the taxonomy and must be reviewed before it is applied.
+* `gpt-oss` models can return empty content when a provider enforces JSON mode. J-Search skips JSON mode for them and retries without it if another model returns an empty answer. If the model still runs out of output tokens, increase `JSEARCH_LLM_MAX_TOKENS` or use a shorter CV.
 * Everything is single-user and local. There is no authentication. The server binds to `127.0.0.1` by default; `JSEARCH_HOST=0.0.0.0` exposes the CV import endpoint to the LAN.
 
 ## Roadmap

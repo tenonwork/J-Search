@@ -14,6 +14,8 @@ REMOTE_ENV = {
     "JSEARCH_LLM_TIMEOUT": "30",
 }
 
+LLAMA_ENV = dict(REMOTE_ENV, JSEARCH_LLM_MODEL="@cf/meta/llama-3.1-8b-instruct")
+
 
 def response(status, text="", payload=None):
     fake = mock.Mock()
@@ -21,6 +23,21 @@ def response(status, text="", payload=None):
     fake.text = text
     fake.json.return_value = payload or {}
     return fake
+
+
+def chat_response(content, finish_reason="stop", usage=None):
+    return response(
+        200,
+        payload={
+            "choices": [
+                {
+                    "message": {"content": content},
+                    "finish_reason": finish_reason,
+                }
+            ],
+            "usage": usage or {},
+        },
+    )
 
 
 class ConfigTests(unittest.TestCase):
@@ -56,6 +73,16 @@ class ConfigTests(unittest.TestCase):
             config = llm_client.public_config()
         self.assertEqual(config["base_url"], "https://example.com/v1")
         self.assertNotIn("pass", json.dumps(config))
+
+    def test_max_tokens_is_clamped(self):
+        with mock.patch.dict(
+            os.environ, {"JSEARCH_LLM_MAX_TOKENS": "999999"}, clear=True
+        ):
+            self.assertEqual(llm_client.get_config()["max_tokens"], 16384)
+        with mock.patch.dict(
+            os.environ, {"JSEARCH_LLM_MAX_TOKENS": "1"}, clear=True
+        ):
+            self.assertEqual(llm_client.get_config()["max_tokens"], 256)
 
 
 class ErrorTests(unittest.TestCase):
@@ -157,13 +184,22 @@ class RequestTests(unittest.TestCase):
         self.assertGreaterEqual(result["latency_ms"], 0)
         self.assertTrue(result["ok"])
 
-    def test_chat_json_retries_without_response_format(self):
-        first = response(400, "response_format not supported")
-        second = response(
-            200,
-            payload={"choices": [{"message": {"content": '{"skills": []}'}}]},
-        )
+    def test_gpt_oss_omits_response_format(self):
         with mock.patch.dict(os.environ, REMOTE_ENV, clear=True):
+            with mock.patch(
+                "app.llm_client.requests.post",
+                return_value=chat_response('{"skills": []}'),
+            ) as post:
+                result = llm_client.chat_json([{"role": "user", "content": "hi"}])
+        sent = post.call_args.kwargs["json"]
+        self.assertEqual(result, {"skills": []})
+        self.assertNotIn("response_format", sent)
+        self.assertEqual(sent["max_tokens"], 4096)
+
+    def test_chat_json_retries_without_response_format_on_400(self):
+        first = response(400, "response_format not supported")
+        second = chat_response('{"skills": []}')
+        with mock.patch.dict(os.environ, LLAMA_ENV, clear=True):
             with mock.patch(
                 "app.llm_client.requests.post", side_effect=[first, second]
             ) as post:
@@ -171,6 +207,63 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(result, {"skills": []})
         self.assertIn("response_format", post.call_args_list[0].kwargs["json"])
         self.assertNotIn("response_format", post.call_args_list[1].kwargs["json"])
+
+    def test_empty_json_mode_response_retries_without_format(self):
+        first = chat_response("")
+        second = chat_response('{"skills": []}')
+        with mock.patch.dict(os.environ, LLAMA_ENV, clear=True):
+            with mock.patch(
+                "app.llm_client.requests.post", side_effect=[first, second]
+            ) as post:
+                result = llm_client.chat_json([{"role": "user", "content": "hi"}])
+        self.assertEqual(result, {"skills": []})
+        self.assertIn("response_format", post.call_args_list[0].kwargs["json"])
+        self.assertNotIn("response_format", post.call_args_list[1].kwargs["json"])
+
+    def test_empty_response_after_retry_is_explained(self):
+        empty = chat_response("")
+        with mock.patch.dict(os.environ, LLAMA_ENV, clear=True):
+            with mock.patch(
+                "app.llm_client.requests.post", side_effect=[empty, empty]
+            ):
+                with self.assertRaises(llm_client.LLMError) as caught:
+                    llm_client.chat_json([{"role": "user", "content": "hi"}])
+        message = str(caught.exception)
+        self.assertIn("empty final answer", message)
+        self.assertIn("JSEARCH_LLM_MAX_TOKENS", message)
+
+    def test_length_finish_reason_is_explained(self):
+        truncated = chat_response('{"skills": [', finish_reason="length")
+        with mock.patch.dict(os.environ, REMOTE_ENV, clear=True):
+            with mock.patch(
+                "app.llm_client.requests.post", return_value=truncated
+            ):
+                with self.assertRaises(llm_client.LLMError) as caught:
+                    llm_client.chat_json([{"role": "user", "content": "hi"}])
+        message = str(caught.exception)
+        self.assertIn("ran out of output tokens", message)
+        self.assertIn("JSEARCH_LLM_MAX_TOKENS", message)
+        self.assertIn("4096", message)
+
+    def test_max_tokens_env_override(self):
+        env = dict(REMOTE_ENV, JSEARCH_LLM_MAX_TOKENS="8192")
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch(
+                "app.llm_client.requests.post",
+                return_value=chat_response('{"skills": []}'),
+            ) as post:
+                llm_client.chat_json([{"role": "user", "content": "hi"}])
+        self.assertEqual(post.call_args.kwargs["json"]["max_tokens"], 8192)
+
+    def test_json_mode_can_be_disabled_for_other_models(self):
+        env = dict(LLAMA_ENV, JSEARCH_LLM_JSON_MODE="0")
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch(
+                "app.llm_client.requests.post",
+                return_value=chat_response('{"skills": []}'),
+            ) as post:
+                llm_client.chat_json([{"role": "user", "content": "hi"}])
+        self.assertNotIn("response_format", post.call_args.kwargs["json"])
 
 
 if __name__ == "__main__":
