@@ -12,5 +12,10 @@ env/
 .env
 .env.local
 
-# Legacy scraper output
-data/local_merchant_leads.json
+# Local runtime data and generated dashboard (may contain personal data)
+/data/
+/output/
+
+# Legacy root-level generated files
+/dashboard.html
+/jsearch.db

@@ -213,6 +213,15 @@ Default keywords are seeded the first time the database is created.
 
 Decision snapshots (title, company, score, etc.) are stored alongside the key, so the tracker pages do not depend on the `jobs` row still existing.
 
+## Local Data and Privacy
+
+`data/jsearch.db` and `output/dashboard.html` are runtime artifacts, not source files. Both are ignored by git and must never be committed or force-added.
+
+* `data/jsearch.db` stores fetched jobs, decisions, keywords, and the scoring/candidate profile. It may contain personal job-search data. Back it up separately; deleting it loses your decisions and saved profile.
+* `output/dashboard.html` is regenerated from the database on startup and whenever the dashboard is rebuilt. It is safe to delete.
+
+The `data/` and `output/` directories are created automatically on first run, so a fresh clone works without them. Keep any database backups outside the repository.
+
 ## Getting Started
 
 ### 1. Prerequisites
