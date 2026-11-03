@@ -26,12 +26,19 @@ DEFAULT_MODEL = "qwen2.5:7b-instruct"
 
 
 def get_config():
+    model = os.environ.get("JSEARCH_LLM_MODEL", DEFAULT_MODEL).strip()
+    reasoning_effort = os.environ.get(
+        "JSEARCH_LLM_REASONING_EFFORT", ""
+    ).strip().lower()
+    if not reasoning_effort and "gpt-oss" in model.lower():
+        reasoning_effort = "low"
     return {
         "base_url": os.environ.get("JSEARCH_LLM_BASE_URL", DEFAULT_BASE_URL).rstrip("/"),
-        "model": os.environ.get("JSEARCH_LLM_MODEL", DEFAULT_MODEL).strip(),
+        "model": model,
         "api_key": os.environ.get("JSEARCH_LLM_API_KEY", "").strip(),
         "timeout": _int_env("JSEARCH_LLM_TIMEOUT", 90, 5, 600),
-        "max_tokens": _int_env("JSEARCH_LLM_MAX_TOKENS", 4096, 256, 16384),
+        "max_tokens": _int_env("JSEARCH_LLM_MAX_TOKENS", 8192, 256, 16384),
+        "reasoning_effort": reasoning_effort,
     }
 
 
@@ -132,12 +139,24 @@ def _http_error(status, detail, config):
     return message
 
 
-def _length_error(max_tokens):
+def _length_error(max_tokens, result=None):
+    message = "The model ran out of output tokens before finishing"
+    details = []
+    if result:
+        details.append("content " + str(len(result.get("content", ""))) + " chars")
+        reasoning = result.get("reasoning") or ""
+        if reasoning:
+            details.append("reasoning " + str(len(reasoning)) + " chars")
+        completion_tokens = (result.get("usage") or {}).get("completion_tokens")
+        if completion_tokens:
+            details.append(str(completion_tokens) + " output tokens")
+    if details:
+        message += " (" + ", ".join(details) + ")"
     return (
-        "The model ran out of output tokens before finishing. Increase "
-        "JSEARCH_LLM_MAX_TOKENS (currently "
+        message
+        + ". Increase JSEARCH_LLM_MAX_TOKENS (currently "
         + str(max_tokens)
-        + ") or use a shorter CV."
+        + "), set JSEARCH_LLM_REASONING_EFFORT=low, or use a shorter CV."
     )
 
 
@@ -211,6 +230,20 @@ def _json_mode_enabled(config):
     return "gpt-oss" not in str(config.get("model", "")).lower()
 
 
+def _max_tokens_field(config):
+    """Return the output-budget field this model expects.
+
+    OpenAI reasoning models use ``max_completion_tokens``; most local and
+    third-party OpenAI-compatible servers still use ``max_tokens``.
+    """
+    override = os.environ.get("JSEARCH_LLM_MAX_TOKENS_FIELD", "").strip().lower()
+    if override in ("max_tokens", "max_completion_tokens"):
+        return override
+    if "gpt-oss" in str(config.get("model", "")).lower():
+        return "max_completion_tokens"
+    return "max_tokens"
+
+
 def ping(timeout=20):
     """Send a tiny completion to verify the endpoint, key and model.
 
@@ -228,7 +261,7 @@ def ping(timeout=20):
         "model": config["model"],
         "messages": [{"role": "user", "content": "Reply with the single word OK."}],
         "temperature": 0,
-        "max_tokens": 8,
+        _max_tokens_field(config): 8,
     }
     started = time.perf_counter()
     result, _ = _post_chat(config, payload, _headers(config), timeout=timeout)
@@ -262,23 +295,25 @@ def chat_json(messages, max_tokens=None):
         "model": config["model"],
         "messages": messages,
         "temperature": 0,
-        "max_tokens": budget,
+        _max_tokens_field(config): budget,
     }
     if _json_mode_enabled(config):
         payload["response_format"] = {"type": "json_object"}
+    if config["reasoning_effort"] in ("low", "medium", "high"):
+        payload["reasoning_effort"] = config["reasoning_effort"]
     headers = _headers(config)
 
     result, used_payload = _request_with_format_fallback(config, payload, headers)
     if not result["content"].strip():
         if result["finish_reason"] == "length":
-            raise LLMError(_length_error(budget))
+            raise LLMError(_length_error(budget, result))
         raise LLMError(_empty_content_error(config, result["finish_reason"]))
 
     try:
         return _parse_json(result["content"])
     except ValueError:
         if result["finish_reason"] == "length":
-            raise LLMError(_length_error(budget))
+            raise LLMError(_length_error(budget, result))
         repair = list(messages) + [
             {"role": "assistant", "content": str(result["content"])[:4000]},
             {
@@ -294,13 +329,13 @@ def chat_json(messages, max_tokens=None):
         )
         if not repaired["content"].strip():
             if repaired["finish_reason"] == "length":
-                raise LLMError(_length_error(budget))
+                raise LLMError(_length_error(budget, repaired))
             raise LLMError(_empty_content_error(config, repaired["finish_reason"]))
         try:
             return _parse_json(repaired["content"])
         except ValueError as exc:
             if repaired["finish_reason"] == "length":
-                raise LLMError(_length_error(budget)) from exc
+                raise LLMError(_length_error(budget, repaired)) from exc
             raise LLMError("The model did not return valid JSON.") from exc
 
 
@@ -313,6 +348,32 @@ def _request(config, url, payload, headers, timeout):
         raise LLMError(_connection_error(config)) from exc
 
 
+def _drop_optional_fields(payload):
+    """Return a payload without fields some providers reject, or None."""
+    optional = [
+        key for key in ("response_format", "reasoning_effort") if key in payload
+    ]
+    if not optional:
+        return None
+    fallback = dict(payload)
+    for key in optional:
+        fallback.pop(key, None)
+    return fallback
+
+
+def _swap_budget_field(payload):
+    """Return a payload using the other output-budget field, or None."""
+    if "max_completion_tokens" in payload:
+        swapped = dict(payload)
+        swapped["max_tokens"] = swapped.pop("max_completion_tokens")
+        return swapped
+    if "max_tokens" in payload:
+        swapped = dict(payload)
+        swapped["max_completion_tokens"] = swapped.pop("max_tokens")
+        return swapped
+    return None
+
+
 def _post_chat(config, payload, headers, timeout=None):
     """POST one chat request and return its content, metadata and payload."""
     url = config["base_url"] + "/chat/completions"
@@ -321,11 +382,19 @@ def _post_chat(config, payload, headers, timeout=None):
 
     response = _request(config, url, payload, headers, timeout)
 
-    # A few providers reject response_format. Retry once without it.
-    if response.status_code == 400 and "response_format" in payload:
-        used_payload = dict(payload)
-        used_payload.pop("response_format", None)
-        response = _request(config, url, used_payload, headers, timeout)
+    # Some providers reject optional OpenAI fields such as response_format or
+    # reasoning_effort, or expect the other output-budget field. Retry up to
+    # twice with progressively more compatible payloads.
+    if response.status_code == 400:
+        fallback = _drop_optional_fields(payload)
+        if fallback is not None:
+            used_payload = fallback
+            response = _request(config, url, used_payload, headers, timeout)
+        if response.status_code == 400:
+            swapped = _swap_budget_field(used_payload)
+            if swapped is not None:
+                used_payload = swapped
+                response = _request(config, url, used_payload, headers, timeout)
 
     if response.status_code >= 400:
         raise LLMError(_http_error(response.status_code, response.text, config))
@@ -335,6 +404,9 @@ def _post_chat(config, payload, headers, timeout=None):
         choice = data["choices"][0]
         message = choice["message"]
         content = message.get("content") or ""
+        reasoning = (
+            message.get("reasoning_content") or message.get("reasoning") or ""
+        )
         finish_reason = choice.get("finish_reason")
         usage = data.get("usage") or {}
     except (ValueError, KeyError, IndexError, TypeError) as exc:
@@ -345,8 +417,13 @@ def _post_chat(config, payload, headers, timeout=None):
         content = "".join(
             part.get("text", "") for part in content if isinstance(part, dict)
         )
+    if isinstance(reasoning, list):
+        reasoning = "".join(
+            part.get("text", "") for part in reasoning if isinstance(part, dict)
+        )
     return {
         "content": str(content or ""),
+        "reasoning": str(reasoning or ""),
         "finish_reason": finish_reason,
         "usage": usage,
     }, used_payload
