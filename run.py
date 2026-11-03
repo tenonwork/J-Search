@@ -9,11 +9,13 @@ Usage:
     python run.py      (keep terminal open; Ctrl+C to stop)
 """
 
+import getpass
+import json
 import os
+import sys
 import threading
 import time
 import webbrowser
-import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -55,6 +57,38 @@ def _load_scoring_profile():
 
 
 _load_scoring_profile()
+
+
+def _prompt_for_missing_api_key():
+    """Ask for a hosted provider key when none is configured.
+
+    The key stays in this process's environment only: it is never written to
+    ``.env`` or the database. Local endpoints are skipped because Ollama and
+    similar servers normally accept unauthenticated requests.
+    """
+    config = llm_client.get_config()
+    if config['api_key'] or llm_client.is_local_url(config['base_url']):
+        return
+
+    host = llm_client.provider_host(config['base_url'])
+    if not sys.stdin.isatty():
+        print(f'[LLM] No API key for {host}. Set JSEARCH_LLM_API_KEY before analysing a CV.')
+        return
+
+    print(f'[LLM] No API key found for {host}.')
+    try:
+        key = getpass.getpass(
+            'Paste JSEARCH_LLM_API_KEY (hidden, Enter to skip): '
+        ).strip()
+    except (EOFError, KeyboardInterrupt):
+        print('\n[LLM] No key entered. CV analysis will be unavailable until configured.')
+        return
+
+    if key:
+        os.environ['JSEARCH_LLM_API_KEY'] = key
+        print('[LLM] Key loaded for this session only; it is not written to disk.')
+    else:
+        print('[LLM] No key entered. CV analysis will be unavailable until configured.')
 
 
 def _score_for_storage(jobs):
@@ -735,6 +769,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
+    _prompt_for_missing_api_key()
     _load_jobs_from_db()
     _build_dashboard()
 

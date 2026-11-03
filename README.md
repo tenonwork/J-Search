@@ -129,6 +129,8 @@ The client speaks the OpenAI-compatible `/v1/chat/completions` protocol. Ollama 
    ```
 3. Restart `python run.py`.
 
+If `JSEARCH_LLM_API_KEY` is empty and the endpoint is remote, `python run.py` asks for the key at startup with hidden input. The key is kept in memory for that run only and is never written to `.env`, the database, or logs. To skip the prompt, set the key in `.env` or the environment. Local endpoints such as Ollama never prompt.
+
 `gpt-oss` is a reasoning model. J-Search deliberately skips forced JSON mode for it because some OpenAI-compatible servers return HTTP 200 with empty content when JSON mode is enabled; the prompt still asks for JSON and the parser extracts it. It sends the output budget as `max_completion_tokens` (the OpenAI reasoning-model field) and defaults `JSEARCH_LLM_REASONING_EFFORT` to `low` to leave more of the budget for the JSON answer. If an analysis is cut off, raise `JSEARCH_LLM_MAX_TOKENS`. For other providers with a broken JSON mode, set `JSEARCH_LLM_JSON_MODE=0`; if a provider rejects `reasoning_effort` or the budget field, J-Search retries with a compatible payload.
 
 `.env` is gitignored, and real environment variables override its values. It is plaintext, so use a scoped token and rotate it if it is ever exposed. The dashboard shows a **Remote** badge and can test the connection before you analyse a CV; the test sends only a short "Reply with OK" prompt, never CV content.
@@ -156,7 +158,7 @@ No `.env` is needed for the local default.
 | :-- | :-- | :-- |
 | `JSEARCH_LLM_BASE_URL` | `http://127.0.0.1:11434/v1` | Any OpenAI-compatible base URL |
 | `JSEARCH_LLM_MODEL` | `qwen2.5:7b-instruct` | Model name understood by that endpoint |
-| `JSEARCH_LLM_API_KEY` | empty | Bearer token for remote providers |
+| `JSEARCH_LLM_API_KEY` | empty | Bearer token for remote providers; prompted at startup if missing |
 | `JSEARCH_LLM_TIMEOUT` | `90` | Request timeout in seconds |
 | `JSEARCH_LLM_MAX_TOKENS` | `8192` | Output budget per CV analysis |
 | `JSEARCH_LLM_REASONING_EFFORT` | `low` for gpt-oss | `low`, `medium` or `high`; unset for other models |
