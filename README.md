@@ -209,7 +209,7 @@ If the endpoint is unreachable, the import fails with a provider-aware message. 
 | `jobs` | `id`, `title`, `company`, `location`, `url` (unique), `description`, `source`, `score`, `matches`, `redflags`, `fetched_at` |
 | `decisions` | `job_key` (primary key), `status` (`applied`/`dismissed`), `reason`, `note`, `title`, `company`, `location`, `url`, `source`, `score`, `applied_at`, `created_at`, `updated_at` |
 
-Default keywords are seeded the first time the database is created.
+Default keywords are seeded the first time the database is created. Older databases that used a single-column unique constraint on `keywords.value` are migrated automatically to the current `(type, value)` constraint; saved keywords and paused states are preserved.
 
 Decision snapshots (title, company, score, etc.) are stored alongside the key, so the tracker pages do not depend on the `jobs` row still existing.
 

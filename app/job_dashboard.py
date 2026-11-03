@@ -428,6 +428,7 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
     .profile-focus { margin: 0; font-size: 13px; color: #1e40af; line-height: 1.6; }
     .profile-notes { margin: 0; padding-left: 20px; font-size: 13px; color: #64748b; line-height: 1.6; }
     .profile-mode { margin: 0 0 16px 0; font-size: 12px; font-weight: 600; color: #475569; }
+    .profile-weight-note { margin: -4px 0 14px 0; font-size: 12px; color: #64748b; line-height: 1.5; }
     .profile-mode select { margin-left: 8px; }
     .cv-drop { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 18px 16px; margin: 4px 0 0 0; border: 1.5px dashed #cbd5e1; border-radius: 10px; background: #f8fafc; text-align: center; cursor: pointer; transition: border-color 0.15s, background 0.15s; }
     .cv-drop:hover, .cv-drop:focus-visible, .cv-drop.dragover { border-color: #2563eb; background: #eff6ff; outline: none; }
@@ -1070,6 +1071,7 @@ function renderProfileProposal(data) {
         weightInput('weightGood', 'Match', profile.good_weight, 0, 100) +
         weightInput('weightBad', 'Dealbreaker', profile.dealbreaker_weight, -100, 0) +
         '</div>');
+    parts.push('<p class="profile-weight-note">Scoring weights: points added or subtracted per matched item. They change ranking and visibility, not which keywords are saved.</p>');
     parts.push(renderChipGroup('Core skills', 'core_skills', 'core', profile.core_skills || [], true, ''));
     parts.push(renderChipGroup('AI & infrastructure', 'ai_skills', 'core', profile.ai_skills || [], true, ''));
     parts.push(renderChipGroup('Dealbreakers', 'dealbreakers', 'dealbreaker', profile.dealbreakers || [], true, 'hard drop under Strict and Balanced'));

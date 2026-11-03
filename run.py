@@ -556,11 +556,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         if data.get('mode') == 'replace':
-            db.replace_keywords('focus', focus)
-            db.replace_keywords('exclude', exclude)
+            focus_written = db.replace_keywords('focus', focus)
+            exclude_written = db.replace_keywords('exclude', exclude)
         else:
-            db.add_keywords_bulk('focus', focus)
-            db.add_keywords_bulk('exclude', exclude)
+            focus_written = db.add_keywords_bulk('focus', focus)
+            exclude_written = db.add_keywords_bulk('exclude', exclude)
+
+        if (focus and not focus_written) or (exclude and not exclude_written):
+            self._respond_json(500, {
+                'error': 'Could not save the imported keywords. Check the database and try again.',
+            })
+            return
 
         _load_scoring_profile()
         _build_dashboard()

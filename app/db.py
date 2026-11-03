@@ -17,6 +17,44 @@ def get_conn():
     return conn
 
 
+def _has_keyword_type_value_unique(c):
+    """True when the keywords table has the current (type, value) unique key."""
+    for index in c.execute('PRAGMA index_list(keywords)').fetchall():
+        if not index['unique']:
+            continue
+        name = index['name'].replace('"', '""')
+        columns = [
+            row['name']
+            for row in c.execute(f'PRAGMA index_info("{name}")').fetchall()
+        ]
+        if columns == ['type', 'value']:
+            return True
+    return False
+
+
+def _migrate_keywords_table(c):
+    """Rebuild the legacy keywords table without losing saved keywords.
+
+    Older databases used ``value TEXT UNIQUE``, which prevents the same word
+    from appearing in both the focus and exclude lists and makes
+    ``ON CONFLICT(type, value)`` fail. The rebuild is idempotent.
+    """
+    if _has_keyword_type_value_unique(c):
+        return
+    c.execute('ALTER TABLE keywords RENAME TO keywords_legacy')
+    c.execute('''CREATE TABLE keywords(
+        id INTEGER PRIMARY KEY,
+        type TEXT NOT NULL,
+        value TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        UNIQUE(type, value)
+    )''')
+    c.execute('''INSERT OR IGNORE INTO keywords(type, value, enabled)
+        SELECT type, value, enabled FROM keywords_legacy
+        WHERE type IN ('focus', 'exclude') AND value IS NOT NULL AND value != '' ''')
+    c.execute('DROP TABLE keywords_legacy')
+
+
 def init_db():
     conn = get_conn()
     c = conn.cursor()
@@ -30,6 +68,7 @@ def init_db():
     keyword_cols = {row['name'] for row in c.execute('PRAGMA table_info(keywords)').fetchall()}
     if 'enabled' not in keyword_cols:
         c.execute('ALTER TABLE keywords ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1')
+    _migrate_keywords_table(c)
     c.execute('''CREATE TABLE IF NOT EXISTS jobs(
         id INTEGER PRIMARY KEY,
         title TEXT,
