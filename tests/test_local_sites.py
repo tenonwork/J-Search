@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 
 from app import db
 from fetchers import fetch_career_sites as sites
-from fetchers.local_common import is_tech_title
+from fetchers import fetch_local_merchants as local
 
 
 COOP_ARCHIVE = 'https://www.co-opbank.co.ke/career_tax/co-op-bank/'
@@ -156,13 +156,19 @@ class PageExtractionTests(unittest.TestCase):
         self.assertEqual(job['location'], 'Local (Kenya / East Africa)')
         self.assertEqual(job['url'], COOP_AI)
         self.assertIn('Python', job['desc'])
-        self.assertTrue(is_tech_title(job['title']))
 
-    def test_tech_filter(self):
-        self.assertTrue(is_tech_title('Data Engineer'))
-        self.assertTrue(is_tech_title('ICT Security SOC Analyst'))
-        self.assertFalse(is_tech_title('Commercial Manager Youth Financial Services'))
-        self.assertFalse(is_tech_title('Human Resources Officer'))
+    def test_all_role_types_are_kept(self):
+        for title in (
+            'Commercial Manager Youth Financial Services',
+            'Human Resources Officer',
+            'Data Engineer',
+        ):
+            soup = BeautifulSoup(
+                detail_page(title, 'Hiring now.'),
+                'html.parser',
+            )
+            job = sites._job_from_page(COOP_AI, soup)
+            self.assertEqual(job['title'], title)
 
 
 class ScanTests(unittest.TestCase):
@@ -173,7 +179,7 @@ class ScanTests(unittest.TestCase):
             return url, pages[url].encode('utf-8')
         return fetch
 
-    def test_scan_listing_page_keeps_only_tech_roles(self):
+    def test_scan_listing_page_keeps_all_roles(self):
         pages = {
             COOP_ARCHIVE: ARCHIVE_PAGE,
             COOP_AI: detail_page('AI Integration Engineer', 'Python and APIs.'),
@@ -189,11 +195,14 @@ class ScanTests(unittest.TestCase):
             })
         self.assertEqual(result['resolved_url'], COOP_ARCHIVE)
         self.assertEqual(result['total_found'], 3)
-        self.assertEqual(result['non_tech_count'], 1)
-        self.assertEqual(len(result['jobs']), 2)
+        self.assertEqual(len(result['jobs']), 3)
         self.assertEqual(
             {job['title'] for job in result['jobs']},
-            {'AI Integration Engineer', 'Data Engineer'},
+            {
+                'AI Integration Engineer',
+                'Data Engineer',
+                'Commercial Manager Youth Financial Services',
+            },
         )
         self.assertEqual(result['warnings'], [])
 
@@ -258,6 +267,71 @@ class RedirectTests(unittest.TestCase):
             sites.fetch_page('https://shorturl.at/abc', session=session)
 
 
+class DiscoveryQueryTests(unittest.TestCase):
+    def test_queries_are_clean_deduplicated_and_bounded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_path = db.DB_PATH
+            db.DB_PATH = Path(tmp) / 'queries.db'
+            try:
+                self.assertEqual(db.get_discovery_queries(), [])
+                self.assertTrue(db.save_discovery_queries([
+                    '  Accounting jobs   Nairobi ',
+                    'accounting jobs nairobi',
+                    '',
+                    42,
+                    'x' * 200,
+                ]))
+                queries = db.get_discovery_queries()
+                self.assertEqual(queries[0], 'Accounting jobs Nairobi')
+                self.assertEqual(len(queries[-1]), 120)
+                self.assertEqual(len(queries), 2)
+            finally:
+                db.DB_PATH = old_path
+
+    def test_query_text_is_accepted(self):
+        self.assertEqual(
+            db.normalize_discovery_queries('sales jobs mombasa'),
+            ['sales jobs mombasa'],
+        )
+
+
+class LocalBoardTests(unittest.TestCase):
+    @staticmethod
+    def _job(title, url):
+        return {
+            'title': title,
+            'company': 'Board',
+            'location': 'Local (Kenya / East Africa)',
+            'url': url,
+            'desc': title,
+        }
+
+    def test_board_results_keep_every_role_type_and_use_user_queries(self):
+        board_jobs = [
+            self._job('Commercial Manager', 'https://example.com/jobs/1'),
+            self._job('Human Resources Officer', 'https://example.com/jobs/2'),
+            self._job('Software Engineer', 'https://example.com/jobs/3'),
+        ]
+        with patch.object(local, '_scrape_brightermonday', return_value=board_jobs), \
+                patch.object(local, '_scrape_jobsinkenya', return_value=[]), \
+                patch.object(local, '_scrape_ddg', return_value=[]) as ddg:
+            jobs = local.get_local_board_jobs(['sales jobs', 'accounting jobs'])
+
+        self.assertEqual({job['title'] for job in jobs}, {job['title'] for job in board_jobs})
+        self.assertEqual(ddg.call_count, 2)
+        self.assertEqual(
+            {call.args[0] for call in ddg.call_args_list},
+            {'sales jobs', 'accounting jobs'},
+        )
+
+    def test_empty_queries_skip_web_search(self):
+        with patch.object(local, '_scrape_brightermonday', return_value=[]), \
+                patch.object(local, '_scrape_jobsinkenya', return_value=[]), \
+                patch.object(local, '_scrape_ddg', return_value=[]) as ddg:
+            self.assertEqual(local.get_local_board_jobs(), [])
+        self.assertEqual(ddg.call_count, 0)
+
+
 class LocalSiteSettingsTests(unittest.TestCase):
     def test_default_watchlist_and_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -284,6 +358,17 @@ class LocalSiteSettingsTests(unittest.TestCase):
                 self.assertEqual(db.get_local_sites(), saved)
             finally:
                 db.DB_PATH = old_path
+
+
+class LocalPipelineTests(unittest.TestCase):
+    def test_saved_queries_are_passed_to_the_board_fetcher(self):
+        import run
+
+        with patch.object(run.db, 'get_discovery_queries', return_value=['accounting jobs']), \
+                patch.object(run.db, 'get_local_sites', return_value=[]), \
+                patch.object(run, 'get_local_board_jobs', return_value=[]) as board:
+            self.assertEqual(run._fetch_local_jobs(), [])
+        board.assert_called_once_with(['accounting jobs'])
 
 
 if __name__ == '__main__':

@@ -2,22 +2,14 @@ import requests
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from .local_common import HEADERS, LOCAL_LOCATION, clean_text, is_tech_title
+from .local_common import HEADERS, LOCAL_LOCATION, clean_text
 
 BRIGHTERMONDAY_PAGES = [
-    "https://www.brightermonday.co.ke/jobs/software-data",
-    "https://www.brightermonday.co.ke/jobs/it-software",
-    "https://www.brightermonday.co.ke/jobs/engineering",
+    "https://www.brightermonday.co.ke/jobs",
 ]
 
 JOBSINKENYA_PAGES = [
     "https://www.jobsinkenya.co.ke/",
-]
-
-DDG_QUERIES = [
-    "software developer jobs nairobi kenya",
-    "junior developer jobs kenya remote",
-    "react developer jobs nairobi",
 ]
 
 
@@ -120,17 +112,16 @@ def _scrape_ddg(query):
     return jobs
 
 
-def get_local_merchants_ddg():
-    """Fetch local East African job listings from all local sources."""
-    print("  [Local] Searching for East African tech job postings...")
+def get_local_board_jobs(queries=None):
+    """Fetch local job-board listings plus optional user-defined web searches."""
+    queries = [str(query).strip() for query in (queries or []) if str(query).strip()]
+    print("  [Local] Searching local job boards...")
 
     seen_urls = set()
     local_listings = []
 
     def add(jobs):
         for job in jobs:
-            if not is_tech_title(job['title']):
-                continue
             if job['url'] in seen_urls:
                 continue
             seen_urls.add(job['url'])
@@ -151,14 +142,16 @@ def get_local_merchants_ddg():
             except Exception as e:
                 print("    [" + name + "] Error: " + str(e))
 
-    # DuckDuckGo is rate-limited often - run it, but never depend on it
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [executor.submit(_scrape_ddg, q) for q in DDG_QUERIES]
-        for future in as_completed(futures):
-            try:
-                add(future.result())
-            except Exception:
-                pass
+    # Web search is optional and rate-limited. Run only the searches the user
+    # configured; an empty list means boards and watched pages are enough.
+    if queries:
+        with ThreadPoolExecutor(max_workers=min(3, len(queries))) as executor:
+            futures = [executor.submit(_scrape_ddg, query) for query in queries]
+            for future in as_completed(futures):
+                try:
+                    add(future.result())
+                except Exception:
+                    pass
 
     print("  [Local] Found " + str(len(local_listings)) + " local postings.")
     return local_listings

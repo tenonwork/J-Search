@@ -11,7 +11,6 @@ HEADERS = {
 RSS_FEEDS = [
     # We Work Remotely
     ("WeWorkRemotely", "https://weworkremotely.com/categories/remote-jobs.rss"),
-    ("WeWorkRemotely-Programming", "https://weworkremotely.com/categories/remote-programming-jobs.rss"),
     # Jobspresso
     ("Jobspresso", "https://jobspresso.co/feed/?post_type=job_listing"),
     # Remotive has RSS sometimes

@@ -10,8 +10,10 @@ import {
   Radio,
   RefreshCw,
   ScanLine,
+  Search,
   ShieldCheck,
   Trash2,
+  X,
 } from 'lucide-react';
 import Modal from './Modal';
 import { api } from '../lib/api';
@@ -37,6 +39,10 @@ export default function LocalSourcesModal({ onClose, notify, onImported }) {
   const [sites, setSites] = useState([]);
   const [sitesError, setSitesError] = useState('');
   const [removeTarget, setRemoveTarget] = useState(null);
+  const [queries, setQueries] = useState([]);
+  const [queryDraft, setQueryDraft] = useState('');
+  const [queriesError, setQueriesError] = useState('');
+  const [savingQuery, setSavingQuery] = useState(false);
 
   const loadSites = async () => {
     try {
@@ -48,8 +54,19 @@ export default function LocalSourcesModal({ onClose, notify, onImported }) {
     }
   };
 
+  const loadQueries = async () => {
+    try {
+      const data = await api('/api/discovery-queries');
+      setQueries(data.queries || []);
+      setQueriesError('');
+    } catch {
+      setQueriesError('Could not load discovery searches.');
+    }
+  };
+
   useEffect(() => {
     loadSites();
+    loadQueries();
   }, []);
 
   const scan = async () => {
@@ -145,12 +162,44 @@ export default function LocalSourcesModal({ onClose, notify, onImported }) {
     }
   };
 
+  const saveQueries = async (next) => {
+    setSavingQuery(true);
+    setQueriesError('');
+    try {
+      const data = await api('/api/discovery-queries', 'POST', { queries: next });
+      setQueries(data.queries || []);
+      return true;
+    } catch (queryError) {
+      setQueriesError(queryError.message || 'Could not save discovery searches.');
+      return false;
+    } finally {
+      setSavingQuery(false);
+    }
+  };
+
+  const addQuery = async (event) => {
+    event.preventDefault();
+    const clean = queryDraft.trim();
+    if (!clean || savingQuery) return;
+    if (queries.some((query) => query.toLowerCase() === clean.toLowerCase())) {
+      setQueryDraft('');
+      return;
+    }
+    const ok = await saveQueries([...queries, clean]);
+    if (ok) setQueryDraft('');
+  };
+
+  const removeQuery = async (query) => {
+    if (savingQuery) return;
+    await saveQueries(queries.filter((item) => item !== query));
+  };
+
   const activeSites = sites.filter((site) => site.enabled).length;
 
   return (
     <Modal
       title="Local Sources"
-      eyebrow="Company career pages"
+      eyebrow="Local discovery"
       icon={Radio}
       onClose={onClose}
       size="xl"
@@ -164,7 +213,8 @@ export default function LocalSourcesModal({ onClose, notify, onImported }) {
         <div>
           <p className="modal-copy">
             Paste a company careers page or a whole WhatsApp message. Short links are resolved and the real
-            destination is shown before anything is imported. Only tech-titled roles are added to the Local tab.
+            destination is shown before anything is imported. Discovery searches on the right add web results.
+            Every role type is kept; your keywords shape highlighting and scoring, not what a page contains.
           </p>
 
           <label className="field-label mt-5" htmlFor="local-link-input">
@@ -207,7 +257,6 @@ export default function LocalSourcesModal({ onClose, notify, onImported }) {
               const chosen = selected[index] || [];
               const watching = !!watch[index];
               const found = result.total_found || 0;
-              const omitted = result.non_tech_count || 0;
 
               return (
                 <div key={`result-${index}`} className="overflow-hidden rounded-xl border border-white/[0.08] bg-white/[0.02]">
@@ -234,11 +283,6 @@ export default function LocalSourcesModal({ onClose, notify, onImported }) {
                   <div className="px-4 py-3">
                     <p className="text-[10px] text-slate-500">
                       <span className="font-semibold text-slate-300">{found}</span> role{found === 1 ? '' : 's'} found
-                      {omitted ? (
-                        <>
-                          {' '}· <span className="font-semibold text-rose-300/80">{omitted}</span> non-tech omitted
-                        </>
-                      ) : null}
                     </p>
 
                     <div className="mt-3 space-y-1.5">
@@ -279,7 +323,7 @@ export default function LocalSourcesModal({ onClose, notify, onImported }) {
                         })
                       ) : (
                         <p className="rounded-lg border border-white/[0.04] bg-white/[0.01] px-3 py-3 text-[11px] italic text-slate-600">
-                          No tech-titled roles found.
+                          No roles found on this page.
                         </p>
                       )}
                     </div>
@@ -405,6 +449,71 @@ export default function LocalSourcesModal({ onClose, notify, onImported }) {
             )}
           </div>
 
+          <div className="mt-5 rounded-lg border border-white/[0.06] bg-white/[0.015] p-3.5">
+            <div className="flex items-center justify-between gap-2">
+              <h4 className="flex items-center gap-2 text-[12px] font-semibold text-slate-200">
+                <Search className="h-3.5 w-3.5 text-cyan-300" />
+                Discovery searches
+              </h4>
+              <span className="rounded-md border border-white/[0.06] bg-white/[0.02] px-2 py-1 text-[9px] tabular-nums text-slate-500">
+                {queries.length}/10
+              </span>
+            </div>
+            <p className="mt-1.5 text-[10px] leading-relaxed text-slate-500">
+              Optional web searches run during Local and All runs. Add any role or industry in your local
+              market; leave this empty to rely on boards and watched pages only.
+            </p>
+
+            <form onSubmit={addQuery} className="mt-3 flex items-center gap-2">
+              <input
+                type="text"
+                value={queryDraft}
+                onChange={(event) => setQueryDraft(event.target.value.slice(0, 120))}
+                maxLength={120}
+                placeholder="e.g. accounting jobs nairobi"
+                aria-label="New discovery search"
+                disabled={savingQuery || queries.length >= 10}
+                className="input-dark h-8 min-w-0 flex-1 text-[10px]"
+              />
+              <button
+                type="submit"
+                className="btn btn-primary btn-xs shrink-0"
+                disabled={savingQuery || !queryDraft.trim() || queries.length >= 10}
+              >
+                {savingQuery ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
+                Add
+              </button>
+            </form>
+
+            {queriesError && <p className="mt-2 text-[10px] text-rose-300">{queriesError}</p>}
+
+            <div className="mt-2 space-y-1.5">
+              {queries.length ? (
+                queries.map((query) => (
+                  <div
+                    key={query}
+                    className="flex items-center justify-between gap-2 rounded-md border border-white/[0.05] bg-white/[0.02] px-2.5 py-1.5"
+                  >
+                    <span className="min-w-0 truncate text-[10px] text-slate-300">{query}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeQuery(query)}
+                      disabled={savingQuery}
+                      aria-label={`Remove search ${query}`}
+                      className="rounded p-0.5 text-slate-600 transition hover:bg-rose-500/10 hover:text-rose-300"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))
+              ) : (
+                <p className="rounded-md border border-dashed border-white/[0.07] px-2.5 py-2 text-[10px] text-slate-600">
+                  No web searches yet. Job boards and watched pages still run.
+                </p>
+              )}
+            </div>
+          </div>
+
           <div className="mt-5 space-y-2 rounded-lg border border-white/[0.05] bg-white/[0.015] p-3.5">
             <div className="flex items-start gap-2 text-[10px] leading-relaxed text-slate-500">
               <Check className="mt-0.5 h-3 w-3 shrink-0 text-cyan-300/70" />
@@ -420,7 +529,14 @@ export default function LocalSourcesModal({ onClose, notify, onImported }) {
             </div>
           </div>
 
-          <button type="button" className="btn btn-secondary btn-sm mt-4 w-full" onClick={loadSites}>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm mt-4 w-full"
+            onClick={() => {
+              loadSites();
+              loadQueries();
+            }}
+          >
             <RefreshCw className="h-3.5 w-3.5" />
             Refresh sources
           </button>

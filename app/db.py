@@ -23,6 +23,10 @@ def normalize_keyword_group(value):
 LOCAL_SITES_SETTING = "local_sites"
 MAX_LOCAL_SITES = 50
 
+DISCOVERY_QUERIES_SETTING = "discovery_queries"
+MAX_DISCOVERY_QUERIES = 10
+MAX_DISCOVERY_QUERY_LENGTH = 120
+
 DEFAULT_LOCAL_SITES = (
     {
         "url": "https://www.co-opbank.co.ke/career_tax/co-op-bank/",
@@ -411,6 +415,43 @@ def get_local_sites():
 
 def save_local_sites(sites):
     return set_setting(LOCAL_SITES_SETTING, normalize_local_sites(sites))
+
+
+def normalize_discovery_queries(values):
+    """Clean user-defined searches for the local web-search source."""
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, (list, tuple)):
+        return []
+    clean = []
+    seen = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        value = " ".join(value.split()).strip()
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        clean.append(value[:MAX_DISCOVERY_QUERY_LENGTH])
+        if len(clean) >= MAX_DISCOVERY_QUERIES:
+            break
+    return clean
+
+
+def get_discovery_queries():
+    return normalize_discovery_queries(
+        get_setting(DISCOVERY_QUERIES_SETTING, [])
+    )
+
+
+def save_discovery_queries(queries):
+    return set_setting(
+        DISCOVERY_QUERIES_SETTING,
+        normalize_discovery_queries(queries),
+    )
 
 
 def get_decision_reason_counts():

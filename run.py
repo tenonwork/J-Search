@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 from fetchers.fetch_live_jobs import get_live_remote_jobs
-from fetchers.fetch_local_merchants import get_local_merchants_ddg
+from fetchers.fetch_local_merchants import get_local_board_jobs
 from fetchers.fetch_career_sites import (
     extract_urls, get_career_site_jobs, scan_career_site,
 )
@@ -90,7 +90,12 @@ def _get_scan(token):
 
 def _fetch_local_jobs():
     """Fetch board sources plus every enabled watched career page."""
-    jobs = get_local_merchants_ddg()
+    try:
+        queries = db.get_discovery_queries()
+    except Exception as exc:
+        print('[Local] Could not load discovery searches:', exc)
+        queries = []
+    jobs = get_local_board_jobs(queries)
     try:
         sites = db.get_local_sites()
     except Exception as exc:
@@ -882,6 +887,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._respond_json(200, _weights_payload())
         elif path == '/api/local-sites':
             self._respond_json(200, {'sites': db.get_local_sites()})
+        elif path == '/api/discovery-queries':
+            self._respond_json(200, {'queries': db.get_discovery_queries()})
         elif path == '/api/jobs':
             _load_jobs_from_db()
             body = json.dumps(_api_jobs()).encode('utf-8')
@@ -983,6 +990,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._handle_local_sites_state()
         elif path == '/api/local-sites/delete':
             self._handle_local_sites_delete()
+        elif path == '/api/discovery-queries':
+            data = self._read_json()
+            queries = data.get('queries')
+            if not isinstance(queries, list):
+                self._respond_json(400, {'error': 'Send a list of search queries.'})
+                return
+            if not db.save_discovery_queries(queries):
+                self._respond_json(500, {'error': 'Could not save the discovery searches.'})
+                return
+            self._respond_json(200, {
+                'status': 'ok',
+                'queries': db.get_discovery_queries(),
+            })
         elif path == '/run':
             data = self._read_json()
             mode = data.get('mode', 'all')

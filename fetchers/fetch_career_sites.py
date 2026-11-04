@@ -2,7 +2,7 @@
 
 Short links are resolved first. Listing pages are followed one level deep and
 each role page is reduced to the same title/company/location/url/description
-shape used by the other local fetchers. Only tech-titled roles are returned.
+shape used by the other local fetchers.
 """
 
 import ipaddress
@@ -14,7 +14,7 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 import requests
 from bs4 import BeautifulSoup
 
-from .local_common import HEADERS, LOCAL_LOCATION, clean_text, is_tech_title
+from .local_common import HEADERS, LOCAL_LOCATION, clean_text
 
 
 REQUEST_TIMEOUT = 20
@@ -41,7 +41,10 @@ ROLE_WORD_RE = re.compile(
     r'\b(engineer|developer|programmer|analyst|scientist|specialist|officer|'
     r'architect|manager|technician|administrator|consultant|intern|designer|'
     r'devops|sre|qa|lead|director|coordinator|assistant|accountant|clerk|'
-    r'supervisor|head)\b',
+    r'supervisor|head|sales|marketing|driver|nurse|teacher|lecturer|legal|'
+    r'advocate|finance|financial|accounting|hr|operations|procurement|'
+    r'logistics|customer|support|writer|editor|recruiter|research|'
+    r'communications|secretary|receptionist|chef|security|pharmacist|clinical)\b',
     re.I,
 )
 LISTING_WORD_RE = re.compile(
@@ -423,7 +426,7 @@ def _job_from_page(url, soup, fallback_label=''):
 
 
 def scan_career_site(site, max_jobs=MAX_DETAIL_PAGES):
-    """Resolve one link and return a reviewable list of tech roles.
+    """Resolve one link and return a reviewable list of roles.
 
     ``site`` may be a URL or a ``{"url", "label"}`` dictionary. The result is
     JSON-safe and contains no raw HTML.
@@ -447,17 +450,13 @@ def scan_career_site(site, max_jobs=MAX_DETAIL_PAGES):
     warnings = []
     jobs = []
     total_found = 0
-    non_tech_count = 0
     seen_jobs = set()
 
     def add_job(job):
-        nonlocal total_found, non_tech_count
+        nonlocal total_found
         if not job:
             return
         total_found += 1
-        if not is_tech_title(job['title']):
-            non_tech_count += 1
-            return
         key = _canonical_link(job['url'])
         if key in seen_jobs:
             return
@@ -501,7 +500,6 @@ def scan_career_site(site, max_jobs=MAX_DETAIL_PAGES):
         'page_title': page_title,
         'jobs': jobs,
         'total_found': total_found,
-        'non_tech_count': non_tech_count,
         'warnings': warnings[:8],
     }
 
@@ -527,8 +525,8 @@ def get_career_site_jobs(sites):
             seen.add(key)
             all_jobs.append(job)
         if result['jobs']:
-            print('    [' + str(label) + '] ' + str(len(result['jobs'])) + ' tech role(s).')
+            print('    [' + str(label) + '] ' + str(len(result['jobs'])) + ' role(s).')
         else:
-            print('    [' + str(label) + '] No tech roles found.')
-    print('  [Local sites] Found ' + str(len(all_jobs)) + ' tech role(s).')
+            print('    [' + str(label) + '] No roles found.')
+    print('  [Local sites] Found ' + str(len(all_jobs)) + ' role(s).')
     return all_jobs

@@ -11,19 +11,6 @@ HEADERS = {
 
 LOCAL_LOCATION = "Local (Kenya / East Africa)"
 
-TECH_PATTERN = re.compile(
-    r'\b(software|developer|engineer|programmer|frontend|front-end|backend|back-end|'
-    r'full[\s-]?stack|web|mobile|android|ios|devops|cloud|data|database|analyst|'
-    r'analytics|it\b|ict|tech|technical|qa|quality assurance|tester|test|'
-    r'systems?|network|security|cyber|architect|python|java|javascript|react|'
-    r'node|php|dotnet|\.net|sql|api|support)\b',
-    re.I,
-)
-
 
 def clean_text(text):
     return re.sub(r'\s+', ' ', (text or '')).strip()
-
-
-def is_tech_title(title):
-    return bool(TECH_PATTERN.search(title or ''))

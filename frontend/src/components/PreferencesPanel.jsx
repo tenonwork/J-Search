@@ -198,7 +198,8 @@ export default function PreferencesPanel({
             <h2 className="text-[15px] font-semibold tracking-tight text-slate-100">Keywords & Preferences</h2>
           </div>
           <p className="mt-2 max-w-2xl text-[11px] leading-relaxed text-slate-500">
-            Scrapers fetch a broad set of roles. Your keywords shape what appears here, not what is fetched.
+            Job boards are fetched broadly. Local discovery searches add extra local results; your keywords
+            shape what appears here, not what is fetched.
           </p>
         </div>
 
