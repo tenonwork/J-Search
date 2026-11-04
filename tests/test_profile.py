@@ -7,9 +7,11 @@ from app.job_dashboard import (
     DEFAULT_SCORING_CONFIG,
     _matches_skill,
     get_scoring_config,
+    merge_weight_overrides,
     normalize_scoring_profile,
     passes_filters,
     score_job,
+    weights_view,
 )
 
 
@@ -154,6 +156,44 @@ class ProposalTests(unittest.TestCase):
         )
         self.assertEqual(proposal['profile']['core_skills'][0], 'python')
         self.assertIn('python', proposal['focus'])
+
+
+class WeightViewTests(unittest.TestCase):
+    def test_view_exposes_every_weight_and_its_keywords(self):
+        config = get_scoring_config('balanced', {
+            'core_weight': 12,
+            'dealbreaker_weight': -40,
+        })
+        view = weights_view(config)
+
+        self.assertEqual(view['weights']['core_weight'], 12)
+        self.assertEqual(view['weights']['dealbreaker_weight'], -40)
+        self.assertEqual(len(view['groups']), 5)
+        self.assertEqual(view['defaults']['core_weight'], 8)
+
+        core = next(group for group in view['groups'] if group['key'] == 'core_weight')
+        self.assertIn('react', core['keywords'])
+        self.assertFalse(core['system'])
+
+        pos = next(group for group in view['groups'] if group['key'] == 'pos_weight')
+        self.assertTrue(pos['system'])
+        self.assertEqual(pos['keywords'], ['pos'])
+
+    def test_merge_changes_only_weights_and_keeps_lists(self):
+        stored = {'core_skills': ['haskell'], 'core_weight': 4, 'ai_weight': 2}
+        merged = merge_weight_overrides(stored, {
+            'core_weight': 15,
+            'ai_skills': ['ignored'],
+            'unknown_field': 1,
+        })
+        self.assertEqual(merged['core_weight'], 15)
+        self.assertEqual(merged['core_skills'], ['haskell'])
+        self.assertEqual(merged['ai_weight'], 2)
+        self.assertNotIn('ai_skills', merged)
+
+    def test_merge_rejects_a_payload_without_weights(self):
+        self.assertEqual(merge_weight_overrides({'core_weight': 4}, {'nope': 1}), {})
+        self.assertEqual(merge_weight_overrides(None, 'not-a-dict'), {})
 
 
 class SettingsTests(unittest.TestCase):

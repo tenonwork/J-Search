@@ -5,6 +5,7 @@ import {
   Plus,
   Radio,
   Settings2,
+  SlidersHorizontal,
   Sparkles,
   Tag,
   Upload,
@@ -152,6 +153,7 @@ export default function PreferencesPanel({
   onManageKeywords,
   onOpenLocalSources,
   onOpenProfile,
+  onOpenWeights,
 }) {
   return (
     <section className="glass-panel relative overflow-hidden px-5 py-5 sm:px-6">
@@ -182,6 +184,10 @@ export default function PreferencesPanel({
               <span className="text-[9px] text-slate-600">({pausedCount} paused)</span>
             )}
           </div>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={onOpenWeights}>
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            Keyword weights
+          </button>
           <button type="button" className="btn btn-secondary btn-sm" onClick={onOpenLocalSources}>
             <Radio className="h-3.5 w-3.5" />
             Local Sources

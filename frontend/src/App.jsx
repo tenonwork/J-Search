@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUpRight, Layers3, Sparkles } from 'lucide-react';
 import Header from './components/Header';
 import PreferencesPanel from './components/PreferencesPanel';
@@ -11,9 +11,12 @@ import DeleteKeywordModal from './components/DeleteKeywordModal';
 import DecisionModal from './components/DecisionModal';
 import LocalSourcesModal from './components/LocalSourcesModal';
 import ProfileModal from './components/ProfileModal';
+import ScoringWeightsModal from './components/ScoringWeightsModal';
+import Pagination from './components/Pagination';
 import Toast from './components/Toast';
 import { api } from './lib/api';
 import { isFocused, passesFilters, sortJobs } from './lib/utils';
+import { paginate } from './lib/pagination';
 
 export default function App({ bootstrap }) {
   const [jobs, setJobs] = useState(Array.isArray(bootstrap.jobs) ? bootstrap.jobs : []);
@@ -29,7 +32,10 @@ export default function App({ bootstrap }) {
   const [drawerJob, setDrawerJob] = useState(null);
   const [localOpen, setLocalOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [weightsOpen, setWeightsOpen] = useState(false);
+  const [page, setPage] = useState(1);
   const [toast, setToast] = useState(null);
+  const feedRef = useRef(null);
 
   const notify = useCallback((message, action = null) => {
     setToast({ message, action, key: Date.now() });
@@ -178,6 +184,29 @@ export default function App({ bootstrap }) {
     return sortJobs(filtered, sortOrder);
   }, [jobs, tab, filters, strictness, sortOrder]);
 
+  const pageData = useMemo(() => paginate(visibleJobs, page), [visibleJobs, page]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [tab, filters, strictness, sortOrder]);
+
+  useEffect(() => {
+    if (page > pageData.totalPages) setPage(pageData.totalPages);
+  }, [page, pageData.totalPages]);
+
+  const goToPage = (next) => {
+    const target = Math.min(Math.max(1, Number(next) || 1), pageData.totalPages);
+    if (target === pageData.page) return;
+    setPage(target);
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    requestAnimationFrame(() => {
+      feedRef.current?.scrollIntoView({
+        behavior: reduceMotion ? 'auto' : 'smooth',
+        block: 'start',
+      });
+    });
+  };
+
   return (
     <div className="relative min-h-screen overflow-x-hidden">
       <div className="pointer-events-none fixed inset-0 -z-10">
@@ -203,6 +232,7 @@ export default function App({ bootstrap }) {
             onManageKeywords={setKeywordType}
             onOpenLocalSources={() => setLocalOpen(true)}
             onOpenProfile={() => setProfileOpen(true)}
+            onOpenWeights={() => setWeightsOpen(true)}
           />
 
           <FilterBar
@@ -216,7 +246,10 @@ export default function App({ bootstrap }) {
             visibleCount={visibleJobs.length}
           />
 
-          <div className="flex flex-wrap items-end justify-between gap-3 px-0.5 pt-1">
+          <div
+            ref={feedRef}
+            className="flex scroll-mt-24 flex-wrap items-end justify-between gap-3 px-0.5 pt-1"
+          >
             <div>
               <div className="flex items-center gap-2 text-[9px] font-semibold uppercase tracking-[0.24em] text-cyan-300/60">
                 <Layers3 className="h-3 w-3" />
@@ -240,7 +273,7 @@ export default function App({ bootstrap }) {
 
           {visibleJobs.length ? (
             <div className="space-y-2.5">
-              {visibleJobs.map((job) => (
+              {pageData.items.map((job) => (
                 <JobCard
                   key={job.key || `${job.source}-${job.url}-${job.title}`}
                   job={job}
@@ -255,6 +288,17 @@ export default function App({ bootstrap }) {
             <EmptyState
               title="No roles match this view"
               message="Try a more lenient strictness level, adjust your hide keywords, or run the scrapers to refresh the feed."
+            />
+          )}
+
+          {visibleJobs.length > 0 && (
+            <Pagination
+              page={pageData.page}
+              totalPages={pageData.totalPages}
+              total={pageData.total}
+              start={pageData.start}
+              end={pageData.end}
+              onPageChange={goToPage}
             />
           )}
         </div>
@@ -304,6 +348,18 @@ export default function App({ bootstrap }) {
 
       {profileOpen && (
         <ProfileModal strictness={strictness} onClose={() => setProfileOpen(false)} />
+      )}
+
+      {weightsOpen && (
+        <ScoringWeightsModal
+          strictness={strictness}
+          onClose={() => setWeightsOpen(false)}
+          onSaved={async () => {
+            setWeightsOpen(false);
+            await refreshJobs();
+            notify('Keyword weights saved — scores refreshed');
+          }}
+        />
       )}
 
       <JobDrawer

@@ -28,7 +28,8 @@ from fetchers.fetch_career_sites import (
 from fetchers.fetch_rss_jobs import get_rss_remote_jobs
 from app.job_dashboard import (
     build_dashboard, get_scoring_config, score_job, _is_blocked, _matches_skill,
-    job_key, passes_filters, effective_profile,
+    job_key, passes_filters, effective_profile, merge_weight_overrides,
+    weights_view, WEIGHT_FIELDS,
 )
 from app.applied_page import build_decisions_page
 from app.env import load_dotenv
@@ -321,6 +322,17 @@ def _api_profile():
         'reason_counts': db.get_decision_reason_counts(),
         'llm': llm_client.public_config(),
     }
+
+
+def _weights_payload():
+    """Current score weights plus the keyword lists they apply to."""
+    payload = weights_view(_current_config, _scoring_profile)
+    payload['focus'] = _enabled_keywords('focus')
+    payload['exclude'] = _enabled_keywords('exclude')
+    payload['saved'] = bool(_scoring_profile) and any(
+        key in _scoring_profile for key in WEIGHT_FIELDS
+    )
+    return payload
 
 
 def run_pipeline_global():
@@ -684,6 +696,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
         _build_dashboard()
         self._respond_json(200, {'status': 'ok', 'reload': True})
 
+    def _handle_weights_save(self):
+        """Persist only the score weights, leaving keyword lists untouched."""
+        data = self._read_json()
+        merged = merge_weight_overrides(db.get_scoring_profile(), data.get('weights'))
+        if not merged:
+            self._respond_json(400, {
+                'error': 'Send at least one numeric weight (0-100, or -100-0 for dealbreakers).',
+            })
+            return
+        if not db.save_scoring_profile(merged):
+            self._respond_json(500, {'error': 'Could not save the score weights.'})
+            return
+
+        _load_scoring_profile()
+        _build_dashboard()
+        payload = _weights_payload()
+        payload['status'] = 'ok'
+        self._respond_json(200, payload)
+
     def _handle_local_sites_scan(self):
         data = self._read_json()
         text = str(data.get('text') or '')[:20000]
@@ -847,6 +878,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._respond(200, body, 'application/json')
         elif path == '/api/profile':
             self._respond_json(200, _api_profile())
+        elif path == '/api/weights':
+            self._respond_json(200, _weights_payload())
         elif path == '/api/local-sites':
             self._respond_json(200, {'sites': db.get_local_sites()})
         elif path == '/api/jobs':
@@ -936,6 +969,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._handle_profile_apply()
         elif path == '/api/profile/reset':
             self._handle_profile_reset()
+        elif path == '/api/weights':
+            self._handle_weights_save()
         elif path == '/api/local-sites/scan':
             self._handle_local_sites_scan()
         elif path == '/api/local-sites/apply':

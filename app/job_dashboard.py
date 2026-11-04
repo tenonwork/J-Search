@@ -73,6 +73,59 @@ PROFILE_FIELDS = (
     "dealbreakers", "dealbreaker_weight",
 )
 
+# The editable score weights, in the order the dashboard shows them. `list_field`
+# points at the keyword list each weight applies to; POS is a built-in rule with
+# no editable list of its own.
+WEIGHT_GROUPS = (
+    {
+        "key": "core_weight",
+        "list_field": "core_skills",
+        "label": "Core skills",
+        "description": "Your strongest stack keywords. Every match adds the full core weight.",
+        "tone": "cyan",
+        "min": 0,
+        "max": 100,
+    },
+    {
+        "key": "ai_weight",
+        "list_field": "ai_skills",
+        "label": "AI & infrastructure",
+        "description": "AI, data and tooling keywords. Each match adds the AI weight.",
+        "tone": "blue",
+        "min": 0,
+        "max": 100,
+    },
+    {
+        "key": "good_weight",
+        "list_field": "good_matches",
+        "label": "Good matches",
+        "description": "Location, work style and general fit terms such as remote, hybrid or Nairobi.",
+        "tone": "emerald",
+        "min": 0,
+        "max": 100,
+    },
+    {
+        "key": "pos_weight",
+        "list_field": None,
+        "label": "POS systems",
+        "description": "Built-in boost for roles whose text mentions POS. Not tied to an editable list.",
+        "tone": "amber",
+        "min": 0,
+        "max": 100,
+    },
+    {
+        "key": "dealbreaker_weight",
+        "list_field": "dealbreakers",
+        "label": "Dealbreakers",
+        "description": "Red flags such as senior, lead or 10+ years. Each match subtracts this penalty.",
+        "tone": "rose",
+        "min": -100,
+        "max": 0,
+    },
+)
+
+WEIGHT_FIELDS = tuple(group["key"] for group in WEIGHT_GROUPS)
+
 _PROFILE_LIST_FIELDS = {
     "core_skills": 60,
     "ai_skills": 40,
@@ -169,6 +222,48 @@ def effective_profile(profile=None):
         value = config[field]
         result[field] = list(value) if isinstance(value, list) else value
     return result
+
+
+def weights_view(config=None, profile=None):
+    """Everything the weights form needs to show and explain the scoring scale."""
+    config = config or DEFAULT_SCORING_CONFIG
+
+    groups = []
+    for definition in WEIGHT_GROUPS:
+        item = dict(definition)
+        item["weight"] = int(config.get(definition["key"], DEFAULT_SCORING_CONFIG[definition["key"]]))
+        if definition["list_field"]:
+            item["keywords"] = list(config.get(definition["list_field"], []))
+            item["system"] = False
+        else:
+            item["keywords"] = ["pos"]
+            item["system"] = True
+        groups.append(item)
+
+    return {
+        "weights": {group["key"]: group["weight"] for group in groups},
+        "defaults": {key: int(DEFAULT_SCORING_CONFIG[key]) for key in WEIGHT_FIELDS},
+        "groups": groups,
+        "profile": effective_profile(profile),
+    }
+
+
+def merge_weight_overrides(profile, weights):
+    """Merge validated weight changes into the stored profile.
+
+    Returns an empty dict when no valid weight was supplied, so callers can tell
+    a bad request from a successful merge.
+    """
+    if not isinstance(weights, dict):
+        return {}
+    clean = normalize_scoring_profile({
+        key: value for key, value in weights.items() if key in WEIGHT_FIELDS
+    })
+    if not clean:
+        return {}
+    merged = dict(normalize_scoring_profile(profile or {}))
+    merged.update(clean)
+    return normalize_scoring_profile(merged)
 
 
 def _is_blocked(url: str) -> bool:

@@ -138,5 +138,64 @@ class ProfileApplyTests(unittest.TestCase):
         self.assertIn('Could not save', handler.body['error'])
 
 
+class WeightSaveTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.old_path = db.DB_PATH
+        db.DB_PATH = Path(self.tempdir.name) / 'weights.db'
+        db.init_db()
+
+    def tearDown(self):
+        db.DB_PATH = self.old_path
+        self.tempdir.cleanup()
+
+    @staticmethod
+    def _handler(run, payload):
+        class FakeHandler:
+            def _read_json(self):
+                return payload
+
+            def _respond_json(self, code, body):
+                self.code = code
+                self.body = body
+
+        return FakeHandler()
+
+    def test_save_persists_weights_without_touching_keywords(self):
+        import run
+
+        db.add_keywords_bulk('focus', ['react'])
+        keywords_before = [item['value'] for item in db.get_keywords()['focus']]
+        db.save_scoring_profile({'core_skills': ['haskell'], 'core_weight': 4})
+        handler = self._handler(run, {'weights': {'core_weight': 12, 'dealbreaker_weight': -45}})
+
+        with mock.patch.object(run, '_build_dashboard'), \
+                mock.patch.object(run, '_load_scoring_profile'), \
+                mock.patch.object(run, '_weights_payload', return_value={'status': 'ok'}):
+            run.DashboardHandler._handle_weights_save(handler)
+
+        self.assertEqual(handler.code, 200)
+        profile = db.get_scoring_profile()
+        self.assertEqual(profile['core_weight'], 12)
+        self.assertEqual(profile['dealbreaker_weight'], -45)
+        self.assertEqual(profile['core_skills'], ['haskell'])
+        self.assertEqual(
+            [item['value'] for item in db.get_keywords()['focus']],
+            keywords_before,
+        )
+
+    def test_invalid_weight_payload_is_rejected(self):
+        import run
+
+        handler = self._handler(run, {'weights': {'core_skills': ['react'], 'unknown': 5}})
+
+        with mock.patch.object(run, '_build_dashboard'), \
+                mock.patch.object(run, '_load_scoring_profile'):
+            run.DashboardHandler._handle_weights_save(handler)
+
+        self.assertEqual(handler.code, 400)
+        self.assertIn('numeric weight', handler.body['error'])
+
+
 if __name__ == '__main__':
     unittest.main()

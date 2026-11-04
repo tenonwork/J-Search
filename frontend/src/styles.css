@@ -184,6 +184,48 @@
     @apply bg-cyan-400/10 text-cyan-200;
   }
 
+  .page-btn {
+    @apply inline-flex h-8 min-w-[32px] items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.02] px-2 text-[10px] font-semibold tabular-nums text-slate-400 transition hover:border-white/[0.14] hover:bg-white/[0.055] hover:text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/30 disabled:cursor-not-allowed disabled:border-transparent disabled:bg-transparent disabled:text-slate-700 disabled:hover:text-slate-700;
+  }
+
+  .page-btn-active {
+    @apply border-cyan-400/35 bg-cyan-400/[0.12] text-cyan-100 shadow-[0_0_20px_-10px_rgba(34,211,238,0.9)] hover:border-cyan-300/45 hover:bg-cyan-400/[0.16] hover:text-white;
+  }
+
+  .weight-range {
+    @apply h-1.5 w-full cursor-pointer appearance-none rounded-full outline-none;
+  }
+
+  .weight-range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 16px;
+    width: 16px;
+    border-radius: 999px;
+    border: 2px solid #0b0f19;
+    background: var(--weight-color, #22d3ee);
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.14),
+      0 0 14px -2px var(--weight-color, #22d3ee);
+    cursor: pointer;
+  }
+
+  .weight-range::-moz-range-thumb {
+    height: 16px;
+    width: 16px;
+    border-radius: 999px;
+    border: 2px solid #0b0f19;
+    background: var(--weight-color, #22d3ee);
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.14),
+      0 0 14px -2px var(--weight-color, #22d3ee);
+    cursor: pointer;
+  }
+
+  .weight-range:focus-visible {
+    box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.18);
+  }
+
   .job-card {
     @apply flex cursor-pointer flex-col gap-4 rounded-xl border border-white/[0.07] bg-ink-800/55 p-4 shadow-card backdrop-blur-md transition-all duration-200 hover:-translate-y-0.5 hover:border-white/[0.12] hover:shadow-card-hover sm:flex-row sm:items-start sm:justify-between sm:p-5;
   }
