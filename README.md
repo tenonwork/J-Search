@@ -16,7 +16,7 @@ The pipeline is split into five decoupled layers:
 2. **Normalisation & Deduplication** — Every source is mapped to one shape (`title`, `company`, `location`, `url`, `desc`), then deduplicated on a stable job key (host + path, query and `www.` stripped).
 3. **Calibration Engine** — Whole-word (`\b`) regex scoring with weighted keyword groups and a configurable dealbreaker penalty.
 4. **Decision Filter** — Jobs marked as applied for or dismissed are excluded from the triage list. Raw postings stay in SQLite, so restoring a decision does not require a re-scrape.
-5. **Presentation** — A single-page dashboard served over a local HTTP server. Scoring runs server-side; filtering, strictness and sorting run in the browser, so toggling a control changes the result count instantly.
+5. **Presentation** — A React single-page dashboard served over a local HTTP server. Scoring runs server-side; filtering, strictness and sorting run in the browser, so toggling a control changes the result count instantly.
 
 ## Architecture & Core Stack
 
@@ -28,13 +28,13 @@ The pipeline is split into five decoupled layers:
 ```
 
 * **Language:** Python 3
-* **Server:** `http.server` (no framework, no build step)
+* **Server:** `http.server` (no Python web framework)
 * **Storage:** SQLite via the stdlib `sqlite3` module (`data/jsearch.db`)
 * **HTTP client:** `requests`
 * **HTML parsing:** `BeautifulSoup` (`bs4`) with the stdlib `html.parser`
 * **Feed parsing:** `feedparser`
 * **CV file parsing:** `pypdf` for text-based PDFs; stdlib `zipfile` + `ElementTree` for DOCX
-* **Frontend:** vanilla HTML/CSS/JS — no frameworks, no bundler
+* **Frontend:** React 18 + Vite 5 + Tailwind CSS 3 + Lucide icons, built to `app/dashboard_static/` and served by the Python server
 * **Optional CV import:** any OpenAI-compatible model endpoint, local or hosted (Ollama by default; configure a hosted provider in `.env`), called with `requests`
 
 ## Data Sources
@@ -49,6 +49,7 @@ The pipeline is split into five decoupled layers:
 | Local | BrighterMonday | HTML scraping | Software/Data, IT and Engineering categories |
 | Local | JobsInKenya | HTML scraping | Filtered to tech-relevant titles |
 | Local | DuckDuckGo HTML | Search scraping | Optional extra; frequently returns bot-challenge pages |
+| Local | Company career pages | HTML scraping | User-managed watchlist; short links resolved first; tech titles only |
 
 Local listings are filtered by a tech-title regex before scoring, so HR, supply-chain and sales roles from the boards don't leak into the dashboard.
 
@@ -84,12 +85,17 @@ Presets are applied in the browser by the strictness toggle; the server scores e
 
 ## Dashboard
 
+The dashboard is a dark, responsive React interface built around the J-Search cyan/blue brand mark. It keeps the original scoring and API behaviour while adding score rings, glass panels, keyword chips, and a role-detail drawer.
+
 * **Two tabs:** Global and Local — each with its own result count.
-* **Keyword manager:** Highlight keywords (blue outline on matching cards) and Hide keywords (remove matching cards), with add, pause/enable, and delete. The Manage modal has a `Save changes` button; unchecking a keyword pauses it without deleting it. Permanent deletion happens from the `x` on a tag and requires confirmation. Persisted in SQLite.
+* **Keyword manager:** Highlight keywords (cyan glow on matching cards) and Hide keywords (remove matching cards), with add, autocomplete, pause/enable, and delete. The Manage modal has a `Save changes` button; unchecking a keyword pauses it without deleting it. Permanent deletion happens from the `x` on a tag and requires confirmation. Persisted in SQLite.
 * **Broad-fetch filtering:** Scrapers always fetch a wide set of postings. Keywords only change what the dashboard shows, not what is fetched or how jobs are scored.
 * **Strictness toggle:** Strict / Balanced / Lenient.
-* **Sort:** most recommended first, or least recommended first.
-* **Run controls:** Run All, Run Global Only, and Run Local Only.
+* **Sort:** most recommended first, newest first, or lowest match first.
+* **Score rings:** emerald for 80+, cyan for 50–79, muted slate below 50.
+* **Run controls:** Run All, Run Global Only, and Run Local Only, with live Applied/Hidden tallies in the header.
+* **Job detail drawer:** Review Entry opens a slide-over with the full description, matched signals, red flags, score, and quick apply link.
+* **Local Sources:** paste a company careers page or a whole WhatsApp message. Short links are resolved and the real destination is shown before anything is imported. Scans are review-gated: pick the tech roles to import and optionally watch the page on future Local runs. Watched pages can be paused or removed.
 * **Full-page loading screen:** clicking a run button navigates to a dedicated loading page that polls `/status` and redirects to the dashboard only once the scrape has actually finished.
 * **Per-job decisions:** each card has `Applied` and `Not for me` buttons. Applied removes the posting from triage and logs it on the applied page; Not for me opens a reason picker (preset + optional note) and logs it on the hidden page. Both actions show an Undo toast.
 
@@ -178,7 +184,9 @@ If the endpoint is unreachable, the import fails with a provider-aware message. 
 
 | Route | Method | Purpose |
 | :-- | :-- | :-- |
-| `/` | GET | Rebuild and serve `output/dashboard.html` (falls back to SQLite if nothing is in memory) |
+| `/` | GET | Rebuild the React shell in `output/dashboard.html` with bootstrap data (falls back to SQLite if nothing is in memory) |
+| `/static/*` | GET | Built JS/CSS and favicon assets from `app/dashboard_static/` |
+| `/favicon-32.png`, `/apple-touch-icon.png` | GET | Brand icons for browser tabs and mobile home screens |
 | `/run?mode=all\|global\|local` | GET | Start a scrape and serve the loading page |
 | `/status` | GET | `{"running": true\|false}` for the loading page |
 | `/refresh` | POST | Re-run all scrapers |
@@ -196,6 +204,11 @@ If the endpoint is unreachable, the import fails with a provider-aware message. 
 | `/api/profile/preview` | POST | `{"profile": {...}, "focus": [...], "exclude": [...]}` — impact preview without saving |
 | `/api/profile/apply` | POST | Same payload as preview; persists the profile and adds keywords. Optional `"mode": "replace"` replaces both keyword lists |
 | `/api/profile/reset` | POST | Delete the saved scoring profile and restore defaults |
+| `/api/local-sites` | GET | Watched company career pages with enabled state |
+| `/api/local-sites/scan` | POST | `{"text": "..."}` — extract up to 3 URLs, resolve short links, preview tech roles; nothing is saved |
+| `/api/local-sites/apply` | POST | `{"token": "...", "watch": true, "jobs": ["url"]}` — import selected roles and optionally watch the resolved page |
+| `/api/local-sites/state` | POST | `{"url": "...", "enabled": true\|false}` — pause or re-enable a watched page |
+| `/api/local-sites/delete` | POST | `{"url": "..."}` — remove a watched page |
 | `/api/decisions` | GET | Decisions as JSON; optional `?status=applied\|dismissed` |
 | `/api/decisions` | POST | `{"key": "...", "status": "applied"\|"dismissed", "reason": "...", "note": "...", "job": {...}}` |
 | `/api/decisions/delete` | POST | `{"key": "..."}` — restore a job to the dashboard |
@@ -207,7 +220,7 @@ If the endpoint is unreachable, the import fails with a provider-aware message. 
 | Table | Columns |
 | :-- | :-- |
 | `keywords` | `id`, `type` (`focus`/`exclude`), `value`, `enabled` (1 = active, 0 = paused) — unique per type |
-| `settings` | `key` (primary key), `value` (JSON), `updated_at` — scoring profile and candidate profile |
+| `settings` | `key` (primary key), `value` (JSON), `updated_at` — scoring profile, candidate profile and watched local sources |
 | `jobs` | `id`, `title`, `company`, `location`, `url` (unique), `description`, `source`, `score`, `matches`, `redflags`, `fetched_at` |
 | `decisions` | `job_key` (primary key), `status` (`applied`/`dismissed`), `reason`, `note`, `title`, `company`, `location`, `url`, `source`, `score`, `applied_at`, `created_at`, `updated_at` |
 
@@ -232,40 +245,70 @@ The `data/` and `output/` directories are created automatically on first run, so
 pip install -r requirements.txt
 ```
 
-### 2. File Structure
+### 2. Build the frontend (one-time)
+
+The compiled dashboard is served from `app/dashboard_static/`. Prebuilt assets are kept in the repository, so you only need Node.js when you change the UI:
+
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+Node.js 18 or newer is required. The build writes fixed-name assets (`app.js`, `app.css`) plus favicons into `app/dashboard_static/`; Vite does not need to run while the Python server is running.
+
+### 3. File Structure
 
 ```text
 ├── run.py                           # HTTP server, pipeline orchestration, API routes
 ├── requirements.txt                 # Runtime dependencies
 ├── .env.example                     # Hosted/local model configuration template
 ├── app/
-│   ├── paths.py                     # Project paths (database, generated output)
+│   ├── paths.py                     # Project paths (database, generated output, static assets)
 │   ├── env.py                       # Dependency-free .env loader
 │   ├── db.py                        # SQLite layer (keywords, jobs, decisions, settings)
-│   ├── job_dashboard.py             # Scoring engine, presets, dashboard template
+│   ├── job_dashboard.py             # Scoring engine, presets, React shell + bootstrap
 │   ├── cv_profile.py                # CV scrubbing, validation, profile proposal
 │   ├── cv_import.py                 # Local PDF/DOCX/TXT text extraction for uploads
 │   ├── llm_client.py                # OpenAI-compatible chat client
 │   ├── skills_taxonomy.json         # Allow-listed skills, aliases, generic blocklist
-│   └── applied_page.py              # Applied and hidden tracker page templates
+│   ├── applied_page.py              # Applied and hidden tracker page templates
+│   └── dashboard_static/            # Built React bundle served at /static
+├── frontend/
+│   ├── index.html                   # Vite entry document
+│   ├── package.json                 # React, Tailwind and build scripts
+│   ├── vite.config.js               # Fixed app.js/app.css output
+│   ├── tailwind.config.js           # Brand palette, fonts, shadows, animations
+│   ├── public/                      # Favicon crops generated from assets/
+│   └── src/
+│       ├── App.jsx                  # Dashboard state, filters, decisions, modal wiring
+│       ├── components/              # Header, keyword panel, cards, drawer, modals
+│       └── lib/                     # API helper and client-side scoring/filter utilities
+├── assets/
+│   ├── Logo-J Search.png            # Brand source
+│   └── Favicon-J Search.png         # Favicon source
 ├── fetchers/
 │   ├── fetch_live_jobs.py           # Global API sources
 │   ├── fetch_rss_jobs.py            # Global RSS feeds
-│   └── fetch_local_merchants.py     # Local Kenyan board scrapers
+│   ├── fetch_local_merchants.py     # Local Kenyan board scrapers
+│   ├── fetch_career_sites.py        # Watched career pages and short-link resolution
+│   └── local_common.py              # Shared local-source headers and tech-title filter
 ├── tests/
 │   ├── test_profile.py              # Stdlib unittest suite for the profile pipeline
 │   ├── test_cv_import.py            # PDF/DOCX/TXT extraction and limit tests
 │   ├── test_env.py                  # .env parsing and precedence tests
-│   └── test_llm_client.py           # Config redaction and model error tests
+│   ├── test_llm_client.py           # Config redaction and model error tests
+│   ├── test_local_sites.py          # Career-page scanning, safety and watchlist tests
+│   └── test_dashboard_shell.py      # React shell and bootstrap injection test
 ├── legacy/
 │   └── local_directory_scraper.py   # Legacy Playwright scraper (not used by the pipeline)
 ├── data/
 │   └── jsearch.db                   # SQLite database (created on first run)
 └── output/
-    └── dashboard.html               # Generated output (rebuilt on every GET /)
+    └── dashboard.html               # Generated React shell (rebuilt on every GET /)
 ```
 
-### 3. Run
+### 4. Run
 
 ```bash
 python run.py
@@ -284,6 +327,9 @@ python -m unittest discover -s tests -v
 * Several public job APIs are intermittently blocked or rate-limited depending on network; the fetchers degrade gracefully but the Global count will vary between runs.
 * DuckDuckGo search scraping now often returns a bot-challenge page (HTTP 202). It is treated as an optional source, never a required one.
 * HTML scrapers depend on BrighterMonday/JobsInKenya markup and will need selector updates if those sites redesign.
+* Local Sources reads static HTML. JavaScript-only career pages, logins and infinite-scroll listings are not supported; the scanner follows the first page of role links and caps each site at 25 detail pages. A redesign can require selector or link-heuristic changes.
+* WhatsApp messages are pasted into the dashboard, not read automatically. WhatsApp Desktop/Web has no supported local API, and its local message store is encrypted; scraping it is fragile and against its terms.
+* Short links are resolved and the final destination is shown before import. Local/private addresses, credentials in URLs and non-standard ports are rejected; only `http`/`https` pages are fetched.
 * Job identity is the normalised URL (host + path). A reposted job with a new slug/URL will reappear, the same role listed on two sources with different URLs is treated as two jobs, and boards that put the job ID only in query parameters can collide.
 * Decisions live in `data/jsearch.db`; deleting the database deletes the application history.
 * Keyword changes affect visibility only. The scoring profile (core skills, AI skills, weights, dealbreakers) is edited through the CV import review or the settings API, not by the keyword manager.
@@ -295,6 +341,7 @@ python -m unittest discover -s tests -v
 ## Roadmap
 
 - [ ] **Keyword-driven queries:** feed highlight keywords into DuckDuckGo/BrighterMonday search URLs so filters shape the scrape, not just the view.
+- [x] **Company career pages:** a user-managed Local watchlist with short-link resolution and review-gated imports.
 - [x] **Editable scoring profile:** core/AI skill weights and dealbreakers can be reviewed and edited during CV import, then saved to `settings`.
 - [x] **PDF/DOCX CV parsing:** extract text from uploaded files instead of requiring paste.
 - [ ] **OCR for scanned CVs:** read image-only PDFs; keep this last because it adds a heavy dependency.

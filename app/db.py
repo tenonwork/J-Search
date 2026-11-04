@@ -1,6 +1,7 @@
 import sqlite3
 import json
 from datetime import datetime, timezone
+from urllib.parse import urlparse, urlunparse
 
 from .paths import DB_PATH
 
@@ -8,6 +9,17 @@ DEFAULT_KEYWORDS = {
     "focus": ["react", "typescript", "python", "postgres", "supabase"],
     "exclude": ["senior", "lead", "manager", "architect"],
 }
+
+LOCAL_SITES_SETTING = "local_sites"
+MAX_LOCAL_SITES = 50
+
+DEFAULT_LOCAL_SITES = (
+    {
+        "url": "https://www.co-opbank.co.ke/career_tax/co-op-bank/",
+        "label": "Co-operative Bank of Kenya",
+        "enabled": True,
+    },
+)
 
 
 def get_conn():
@@ -256,6 +268,90 @@ def get_candidate_profile():
 
 def save_candidate_profile(candidate):
     return set_setting('candidate_profile', candidate)
+
+
+def _clean_site_url(value):
+    """Normalise a watched-source URL, or return an empty string."""
+    if not isinstance(value, str):
+        return ''
+    url = value.strip()
+    if not url or len(url) > 1000:
+        return ''
+    if '://' not in url:
+        url = 'https://' + url
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except ValueError:
+        return ''
+    if parsed.scheme.lower() not in ('http', 'https'):
+        return ''
+    if not parsed.netloc or parsed.username or parsed.password:
+        return ''
+    if port not in (None, 80, 443):
+        return ''
+    return urlunparse((
+        parsed.scheme.lower(),
+        parsed.netloc.lower(),
+        parsed.path or '/',
+        '',
+        parsed.query,
+        '',
+    ))
+
+
+def _site_key(url):
+    """Deduplicate sources while ignoring scheme, a leading www and fragments."""
+    parsed = urlparse(url)
+    host = parsed.netloc.lower().removeprefix('www.')
+    path = (parsed.path or '/').rstrip('/')
+    return host + path + ('?' + parsed.query if parsed.query else '')
+
+
+def _site_label_from_url(url):
+    host = urlparse(url).netloc.lower().removeprefix('www.')
+    return host or 'Local source'
+
+
+def normalize_local_sites(sites):
+    """Return a safe, deduplicated list of watched local career pages."""
+    if not isinstance(sites, (list, tuple)):
+        return []
+    clean = []
+    seen = set()
+    for item in sites:
+        if isinstance(item, str):
+            item = {'url': item}
+        if not isinstance(item, dict):
+            continue
+        url = _clean_site_url(item.get('url'))
+        if not url:
+            continue
+        key = _site_key(url)
+        if key in seen:
+            continue
+        seen.add(key)
+        label = ' '.join(str(item.get('label') or '').split())[:120]
+        clean.append({
+            'url': url,
+            'label': label or _site_label_from_url(url),
+            'enabled': bool(item.get('enabled', True)),
+        })
+        if len(clean) >= MAX_LOCAL_SITES:
+            break
+    return clean
+
+
+def get_local_sites():
+    """Watched career pages. The default is returned only before the first save."""
+    value = get_setting(LOCAL_SITES_SETTING)
+    if value is None:
+        return normalize_local_sites(DEFAULT_LOCAL_SITES)
+    return normalize_local_sites(value)
+
+
+def save_local_sites(sites):
+    return set_setting(LOCAL_SITES_SETTING, normalize_local_sites(sites))
 
 
 def get_decision_reason_counts():

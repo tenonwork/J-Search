@@ -8,3 +8,4 @@ OUTPUT_DIR = ROOT_DIR / 'output'
 
 DB_PATH = DATA_DIR / 'jsearch.db'
 DASHBOARD_PATH = OUTPUT_DIR / 'dashboard.html'
+DASHBOARD_STATIC_DIR = ROOT_DIR / 'app' / 'dashboard_static'

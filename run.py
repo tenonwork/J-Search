@@ -12,6 +12,7 @@ Usage:
 import getpass
 import json
 import os
+import secrets
 import sys
 import threading
 import time
@@ -21,6 +22,9 @@ from urllib.parse import urlparse, parse_qs
 
 from fetchers.fetch_live_jobs import get_live_remote_jobs
 from fetchers.fetch_local_merchants import get_local_merchants_ddg
+from fetchers.fetch_career_sites import (
+    extract_urls, get_career_site_jobs, scan_career_site,
+)
 from fetchers.fetch_rss_jobs import get_rss_remote_jobs
 from app.job_dashboard import (
     build_dashboard, get_scoring_config, score_job, _is_blocked, _matches_skill,
@@ -28,7 +32,7 @@ from app.job_dashboard import (
 )
 from app.applied_page import build_decisions_page
 from app.env import load_dotenv
-from app.paths import DASHBOARD_PATH
+from app.paths import DASHBOARD_PATH, DASHBOARD_STATIC_DIR
 from app import cv_import, cv_profile, db, llm_client
 
 # Load local model/provider configuration before reading the host settings.
@@ -44,6 +48,54 @@ _global_jobs = []
 _local_jobs = []
 _scoring_profile = None
 _current_config = get_scoring_config("balanced")
+
+# Short-lived server-side previews for the Local Sources review gate.
+_scan_cache = {}
+_scan_cache_lock = threading.Lock()
+_SCAN_TTL_SECONDS = 15 * 60
+_SCAN_CACHE_LIMIT = 24
+
+
+def _site_key(url):
+    parsed = urlparse(url or '')
+    host = parsed.netloc.lower().removeprefix('www.')
+    path = (parsed.path or '/').rstrip('/')
+    return host + path + ('?' + parsed.query if parsed.query else '')
+
+
+def _store_scan(result):
+    token = secrets.token_urlsafe(18)
+    now = time.time()
+    with _scan_cache_lock:
+        for key in list(_scan_cache):
+            if _scan_cache[key]['expires'] < now:
+                _scan_cache.pop(key, None)
+        while len(_scan_cache) >= _SCAN_CACHE_LIMIT:
+            _scan_cache.pop(next(iter(_scan_cache)), None)
+        _scan_cache[token] = {'result': result, 'expires': now + _SCAN_TTL_SECONDS}
+    return token
+
+
+def _get_scan(token):
+    with _scan_cache_lock:
+        entry = _scan_cache.get(token)
+        if not entry:
+            return None
+        if entry['expires'] < time.time():
+            _scan_cache.pop(token, None)
+            return None
+        return entry['result']
+
+
+def _fetch_local_jobs():
+    """Fetch board sources plus every enabled watched career page."""
+    jobs = get_local_merchants_ddg()
+    try:
+        sites = db.get_local_sites()
+    except Exception as exc:
+        print('[Local sites] Could not load watched sources:', exc)
+        return jobs
+    return jobs + get_career_site_jobs(sites)
 
 
 def _load_scoring_profile():
@@ -307,7 +359,7 @@ def run_pipeline_local():
         print("  J-Search Pipeline Starting (LOCAL)")
         print("=" * 50)
 
-        local_leads = get_local_merchants_ddg()
+        local_leads = _fetch_local_jobs()
         all_local = _deduplicate_jobs(local_leads)
         _local_jobs = all_local
         try:
@@ -334,7 +386,7 @@ def run_pipeline_all():
 
         remote_jobs = get_live_remote_jobs()
         rss_jobs = get_rss_remote_jobs()
-        local_leads = get_local_merchants_ddg()
+        local_leads = _fetch_local_jobs()
 
         all_remote_combined = remote_jobs + rss_jobs
         all_remote = _deduplicate_jobs(all_remote_combined)
@@ -373,6 +425,21 @@ def _start_pipeline(mode):
     _pipeline_running = True
     threading.Thread(target=target, daemon=True).start()
     return True
+
+
+STATIC_CONTENT_TYPES = {
+    '.css': 'text/css; charset=utf-8',
+    '.js': 'text/javascript; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.html': 'text/html; charset=utf-8',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.svg': 'image/svg+xml',
+    '.ico': 'image/x-icon',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+}
 
 
 LOADING_PAGE = """<!DOCTYPE html>
@@ -617,6 +684,132 @@ class DashboardHandler(BaseHTTPRequestHandler):
         _build_dashboard()
         self._respond_json(200, {'status': 'ok', 'reload': True})
 
+    def _handle_local_sites_scan(self):
+        data = self._read_json()
+        text = str(data.get('text') or '')[:20000]
+        urls = extract_urls(text)
+        if not urls:
+            self._respond_json(400, {
+                'error': 'Paste a link or a WhatsApp message containing a link.',
+            })
+            return
+
+        results = []
+        for url in urls:
+            try:
+                result = scan_career_site({'url': url})
+            except Exception as exc:
+                results.append({
+                    'input_url': url,
+                    'error': str(exc) or 'Could not read that link.',
+                    'jobs': [],
+                    'warnings': [],
+                })
+                continue
+            result['token'] = _store_scan(result)
+            results.append(result)
+
+        self._respond_json(200, {'results': results})
+
+    def _handle_local_sites_apply(self):
+        global _local_jobs
+        data = self._read_json()
+        token = str(data.get('token') or '')
+        cached = _get_scan(token)
+        if not cached:
+            self._respond_json(400, {
+                'error': 'That scan expired. Scan the link again before importing.',
+            })
+            return
+
+        watch = bool(data.get('watch', True))
+        requested = data.get('jobs')
+        if isinstance(requested, list):
+            requested_urls = {str(url) for url in requested}
+            jobs = [job for job in cached['jobs'] if job.get('url') in requested_urls]
+        else:
+            jobs = list(cached['jobs'])
+
+        if not jobs and not watch:
+            self._respond_json(400, {
+                'error': 'Select at least one role, or choose to watch the page.',
+            })
+            return
+
+        watched = False
+        if watch:
+            try:
+                sites = db.get_local_sites()
+            except Exception:
+                sites = []
+            key = _site_key(cached['resolved_url'])
+            existing = next(
+                (site for site in sites if _site_key(site.get('url', '')) == key),
+                None,
+            )
+            if existing:
+                existing['enabled'] = True
+                existing['label'] = existing.get('label') or cached.get('label') or ''
+            else:
+                sites.append({
+                    'url': cached['resolved_url'],
+                    'label': cached.get('label') or '',
+                    'enabled': True,
+                })
+            if not db.save_local_sites(sites):
+                self._respond_json(500, {'error': 'Could not save the watched source.'})
+                return
+            watched = True
+
+        if jobs:
+            _load_jobs_from_db()
+            _local_jobs = _deduplicate_jobs((_local_jobs or []) + jobs)
+            try:
+                db.save_jobs(_score_for_storage(jobs), 'local')
+            except Exception:
+                pass
+            _build_dashboard()
+
+        self._respond_json(200, {
+            'status': 'ok',
+            'imported': len(jobs),
+            'watched': watched,
+            'site_count': len(db.get_local_sites()),
+        })
+
+    def _handle_local_sites_state(self):
+        data = self._read_json()
+        url = str(data.get('url') or '').strip()
+        enabled = bool(data.get('enabled', True))
+        sites = db.get_local_sites()
+        key = _site_key(url)
+        found = False
+        for site in sites:
+            if _site_key(site.get('url', '')) == key:
+                site['enabled'] = enabled
+                found = True
+                break
+        if not found:
+            self._respond_json(404, {'error': 'That source is not in the watchlist.'})
+            return
+        if not db.save_local_sites(sites):
+            self._respond_json(500, {'error': 'Could not update the watched source.'})
+            return
+        self._respond_json(200, {'status': 'ok', 'sites': db.get_local_sites()})
+
+    def _handle_local_sites_delete(self):
+        data = self._read_json()
+        url = str(data.get('url') or '').strip()
+        key = _site_key(url)
+        sites = [
+            site for site in db.get_local_sites()
+            if _site_key(site.get('url', '')) != key
+        ]
+        if not db.save_local_sites(sites):
+            self._respond_json(500, {'error': 'Could not remove the watched source.'})
+            return
+        self._respond_json(200, {'status': 'ok', 'sites': db.get_local_sites()})
+
     def do_GET(self):
         global _pipeline_running
         path = urlparse(self.path).path
@@ -628,6 +821,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 print('[Dashboard] Rebuild failed:', e)
             self._serve_file(DASHBOARD_PATH, 'text/html; charset=utf-8')
+        elif path.startswith('/static/'):
+            self._serve_static(path[len('/static/'):])
+        elif path in ('/favicon.ico', '/favicon-32.png'):
+            self._serve_static('favicon-32.png')
+        elif path in ('/icon-64.png', '/apple-touch-icon.png', '/icon-512.png'):
+            self._serve_static(path.lstrip('/'))
         elif path.startswith('/run'):
             parsed = urlparse(self.path)
             params = parse_qs(parsed.query)
@@ -648,6 +847,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._respond(200, body, 'application/json')
         elif path == '/api/profile':
             self._respond_json(200, _api_profile())
+        elif path == '/api/local-sites':
+            self._respond_json(200, {'sites': db.get_local_sites()})
         elif path == '/api/jobs':
             _load_jobs_from_db()
             body = json.dumps(_api_jobs()).encode('utf-8')
@@ -735,6 +936,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._handle_profile_apply()
         elif path == '/api/profile/reset':
             self._handle_profile_reset()
+        elif path == '/api/local-sites/scan':
+            self._handle_local_sites_scan()
+        elif path == '/api/local-sites/apply':
+            self._handle_local_sites_apply()
+        elif path == '/api/local-sites/state':
+            self._handle_local_sites_state()
+        elif path == '/api/local-sites/delete':
+            self._handle_local_sites_delete()
         elif path == '/run':
             data = self._read_json()
             mode = data.get('mode', 'all')
@@ -742,6 +951,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._respond(200, b'{"status":"ok"}', 'application/json')
         else:
             self._respond(404, b'Not found')
+
+    def _serve_static(self, relative_path):
+        root = DASHBOARD_STATIC_DIR.resolve()
+        candidate = (root / relative_path).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            self._respond(404, b'Not found')
+            return
+        if not candidate.is_file():
+            self._respond(404, b'Not found')
+            return
+        content_type = STATIC_CONTENT_TYPES.get(
+            candidate.suffix.lower(), 'application/octet-stream'
+        )
+        self._serve_file(candidate, content_type)
 
     def _serve_file(self, filename, content_type):
         try:
@@ -754,7 +979,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
         except FileNotFoundError:
-            self._respond(404, b'Dashboard not found. Run scrapers first.')
+            self._respond(404, b'File not found.')
 
     def _respond(self, code, body, content_type='text/plain'):
         self.send_response(code)

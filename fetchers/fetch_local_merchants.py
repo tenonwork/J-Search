@@ -1,16 +1,8 @@
-import re
 import requests
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-}
-
-LOCAL_LOCATION = "Local (Kenya / East Africa)"
+from .local_common import HEADERS, LOCAL_LOCATION, clean_text, is_tech_title
 
 BRIGHTERMONDAY_PAGES = [
     "https://www.brightermonday.co.ke/jobs/software-data",
@@ -29,24 +21,6 @@ DDG_QUERIES = [
 ]
 
 
-def _clean(text):
-    return re.sub(r'\s+', ' ', (text or '')).strip()
-
-
-TECH_PATTERN = re.compile(
-    r'\b(software|developer|engineer|programmer|frontend|front-end|backend|back-end|'
-    r'full[\s-]?stack|web|mobile|android|ios|devops|cloud|data|database|analyst|'
-    r'analytics|it\b|ict|tech|technical|qa|quality assurance|tester|test|'
-    r'systems?|network|security|cyber|architect|python|java|javascript|react|'
-    r'node|php|dotnet|\.net|sql|api|support)\b',
-    re.I,
-)
-
-
-def _is_tech_title(title):
-    return bool(TECH_PATTERN.search(title or ''))
-
-
 def _scrape_brightermonday():
     """BrighterMonday Kenya - individual listing pages."""
     jobs = []
@@ -61,7 +35,7 @@ def _scrape_brightermonday():
                 href = a['href']
                 if '/listings/' not in href:
                     continue
-                title = _clean(a.get_text(' '))
+                title = clean_text(a.get_text(' '))
                 if len(title) < 6:
                     continue
                 if not href.startswith('http'):
@@ -95,7 +69,7 @@ def _scrape_jobsinkenya():
                 href = a['href']
                 if '/job/' not in href:
                     continue
-                title = _clean(a.get_text(' '))
+                title = clean_text(a.get_text(' '))
                 if len(title) < 6:
                     continue
                 if not href.startswith('http'):
@@ -128,12 +102,12 @@ def _scrape_ddg(query):
             a = result.find('a', class_='result__a')
             if not a:
                 continue
-            title = _clean(a.get_text(' '))
+            title = clean_text(a.get_text(' '))
             href = a.get('href', '')
             if not title or not href:
                 continue
             snippet_el = result.find('a', class_='result__snippet')
-            snippet = _clean(snippet_el.get_text(' ')) if snippet_el else title
+            snippet = clean_text(snippet_el.get_text(' ')) if snippet_el else title
             jobs.append({
                 "title": title[:110],
                 "company": "Web search",
@@ -155,7 +129,7 @@ def get_local_merchants_ddg():
 
     def add(jobs):
         for job in jobs:
-            if not _is_tech_title(job['title']):
+            if not is_tech_title(job['title']):
                 continue
             if job['url'] in seen_urls:
                 continue
