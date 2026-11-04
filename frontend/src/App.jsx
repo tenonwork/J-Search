@@ -101,11 +101,11 @@ export default function App({ bootstrap }) {
     }
   };
 
-  const addKeyword = async (type, value) => {
+  const addKeyword = async (type, value, group = '') => {
     try {
-      await api('/api/keywords/add', 'POST', { type, value });
+      await api('/api/keywords/add', 'POST', { type, value, group });
       await loadKeywords();
-      notify(`Added “${value}”`);
+      notify(group ? `Added “${value}” to ${group}` : `Added “${value}”`);
       return true;
     } catch {
       notify('Could not add keyword');
@@ -126,11 +126,11 @@ export default function App({ bootstrap }) {
     }
   };
 
-  const saveKeywordStates = async (states) => {
+  const saveKeywordStates = async (states, groups) => {
     if (!keywordType) return;
     const type = keywordType;
     try {
-      await api('/api/keywords/state', 'POST', { type, states });
+      await api('/api/keywords/state', 'POST', { type, states, groups });
       setKeywordType(null);
       await loadKeywords();
       notify('Keyword settings saved');

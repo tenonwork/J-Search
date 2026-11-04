@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import {
   EyeOff,
+  FolderPlus,
   Loader2,
   Plus,
   Radio,
@@ -66,17 +67,26 @@ function KeywordChip({ type, item, onDelete }) {
 
 function KeywordSection({ type, title, subtitle, items, onAdd, onDelete, onManage }) {
   const [value, setValue] = useState('');
+  const [group, setGroup] = useState('');
   const [adding, setAdding] = useState(false);
   const focus = type === 'focus';
+  const existingGroups = [...new Set(items.map((item) => item.group).filter(Boolean))];
 
   const submit = async (event) => {
     event.preventDefault();
     const clean = value.trim().toLowerCase();
     if (!clean || adding) return;
+    const typedGroup = group.trim().slice(0, 40);
+    const cleanGroup = typedGroup
+      ? existingGroups.find((name) => name.toLowerCase() === typedGroup.toLowerCase()) || typedGroup
+      : '';
     setAdding(true);
-    const ok = await onAdd(type, clean);
+    const ok = await onAdd(type, clean, cleanGroup);
     setAdding(false);
-    if (ok) setValue('');
+    if (ok) {
+      setValue('');
+      setGroup('');
+    }
   };
 
   return (
@@ -111,33 +121,53 @@ function KeywordSection({ type, title, subtitle, items, onAdd, onDelete, onManag
         )}
       </div>
 
-      <form onSubmit={submit} className="mt-3 flex items-center gap-2">
-        <div className="relative min-w-0 flex-1">
-          <Plus className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-600" />
+      <form onSubmit={submit} className="mt-3 space-y-2">
+        <div className="flex items-center gap-2">
+          <div className="relative min-w-0 flex-1">
+            <Plus className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-600" />
+            <input
+              type="text"
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+              list={focus ? 'focus-keyword-suggestions' : undefined}
+              placeholder={focus ? 'Add a highlight keyword...' : 'Add a hide keyword...'}
+              className={`input-dark pl-8 ${focus ? 'focus:border-cyan-400/40 focus:ring-cyan-400/10' : 'focus:border-rose-400/40 focus:ring-rose-400/10'}`}
+            />
+            {focus && (
+              <datalist id="focus-keyword-suggestions">
+                {FOCUS_SUGGESTIONS.map((suggestion) => (
+                  <option value={suggestion} key={suggestion} />
+                ))}
+              </datalist>
+            )}
+          </div>
+          <button
+            type="submit"
+            disabled={adding || !value.trim()}
+            className={`btn btn-xs shrink-0 ${focus ? 'btn-primary' : 'btn-danger-soft'}`}
+          >
+            {adding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+            Add
+          </button>
+        </div>
+
+        <div className="relative">
+          <FolderPlus className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-600" />
           <input
             type="text"
-            value={value}
-            onChange={(event) => setValue(event.target.value)}
-            list={focus ? 'focus-keyword-suggestions' : undefined}
-            placeholder={focus ? 'Add a highlight keyword...' : 'Add a hide keyword...'}
-            className={`input-dark pl-8 ${focus ? 'focus:border-cyan-400/40 focus:ring-cyan-400/10' : 'focus:border-rose-400/40 focus:ring-rose-400/10'}`}
+            value={group}
+            onChange={(event) => setGroup(event.target.value.slice(0, 40))}
+            list={`${type}-group-suggestions`}
+            placeholder="Group (optional) — e.g. Frontend, Leadership"
+            aria-label={`Group for new ${focus ? 'highlight' : 'hide'} keyword`}
+            className="input-dark h-8 pl-8 text-[10px]"
           />
-          {focus && (
-            <datalist id="focus-keyword-suggestions">
-              {FOCUS_SUGGESTIONS.map((suggestion) => (
-                <option value={suggestion} key={suggestion} />
-              ))}
-            </datalist>
-          )}
+          <datalist id={`${type}-group-suggestions`}>
+            {existingGroups.map((name) => (
+              <option value={name} key={name} />
+            ))}
+          </datalist>
         </div>
-        <button
-          type="submit"
-          disabled={adding || !value.trim()}
-          className={`btn btn-xs shrink-0 ${focus ? 'btn-primary' : 'btn-danger-soft'}`}
-        >
-          {adding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-          Add
-        </button>
       </form>
     </section>
   );

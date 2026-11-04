@@ -10,6 +10,16 @@ DEFAULT_KEYWORDS = {
     "exclude": ["senior", "lead", "manager", "architect"],
 }
 
+MAX_KEYWORD_GROUP = 40
+
+
+def normalize_keyword_group(value):
+    """Trim and bound a free-text keyword group name."""
+    if not isinstance(value, str):
+        return ''
+    value = " ".join(value.split()).strip()
+    return value[:MAX_KEYWORD_GROUP]
+
 LOCAL_SITES_SETTING = "local_sites"
 MAX_LOCAL_SITES = 50
 
@@ -53,16 +63,23 @@ def _migrate_keywords_table(c):
     """
     if _has_keyword_type_value_unique(c):
         return
+    legacy_columns = {
+        row['name'] for row in c.execute('PRAGMA table_info(keywords)').fetchall()
+    }
+    group_expression = (
+        "COALESCE(keyword_group, '')" if 'keyword_group' in legacy_columns else "''"
+    )
     c.execute('ALTER TABLE keywords RENAME TO keywords_legacy')
     c.execute('''CREATE TABLE keywords(
         id INTEGER PRIMARY KEY,
         type TEXT NOT NULL,
         value TEXT NOT NULL,
         enabled INTEGER NOT NULL DEFAULT 1,
+        keyword_group TEXT NOT NULL DEFAULT '',
         UNIQUE(type, value)
     )''')
-    c.execute('''INSERT OR IGNORE INTO keywords(type, value, enabled)
-        SELECT type, value, enabled FROM keywords_legacy
+    c.execute('''INSERT OR IGNORE INTO keywords(type, value, enabled, keyword_group)
+        SELECT type, value, enabled, ''' + group_expression + ''' FROM keywords_legacy
         WHERE type IN ('focus', 'exclude') AND value IS NOT NULL AND value != '' ''')
     c.execute('DROP TABLE keywords_legacy')
 
@@ -75,12 +92,18 @@ def init_db():
         type TEXT NOT NULL,
         value TEXT NOT NULL,
         enabled INTEGER NOT NULL DEFAULT 1,
+        keyword_group TEXT NOT NULL DEFAULT '',
         UNIQUE(type, value)
     )''')
     keyword_cols = {row['name'] for row in c.execute('PRAGMA table_info(keywords)').fetchall()}
     if 'enabled' not in keyword_cols:
         c.execute('ALTER TABLE keywords ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1')
     _migrate_keywords_table(c)
+    keyword_cols = {row['name'] for row in c.execute('PRAGMA table_info(keywords)').fetchall()}
+    if 'keyword_group' not in keyword_cols:
+        c.execute(
+            "ALTER TABLE keywords ADD COLUMN keyword_group TEXT NOT NULL DEFAULT ''"
+        )
     c.execute('''CREATE TABLE IF NOT EXISTS jobs(
         id INTEGER PRIMARY KEY,
         title TEXT,
@@ -132,7 +155,7 @@ def get_keywords():
     init_db()
     conn = get_conn()
     c = conn.cursor()
-    c.execute('SELECT type, value, enabled FROM keywords ORDER BY value')
+    c.execute('SELECT type, value, enabled, keyword_group FROM keywords ORDER BY value')
     rows = c.fetchall()
     conn.close()
     result = {'focus': [], 'exclude': []}
@@ -141,22 +164,29 @@ def get_keywords():
             result[r['type']].append({
                 'value': r['value'],
                 'enabled': bool(r['enabled']),
+                'group': r['keyword_group'] or '',
             })
     return result
 
 
-def add_keyword(kw_type, value):
+def add_keyword(kw_type, value, group=''):
     init_db()
     if kw_type not in ('focus', 'exclude'):
         return False
     value = (value or '').lower().strip()
     if not value:
         return False
+    group = normalize_keyword_group(group)
     conn = get_conn()
     c = conn.cursor()
     try:
-        c.execute('''INSERT INTO keywords(type, value, enabled) VALUES(?, ?, 1)
-            ON CONFLICT(type, value) DO UPDATE SET enabled=1''', (kw_type, value))
+        c.execute('''INSERT INTO keywords(type, value, enabled, keyword_group) VALUES(?, ?, 1, ?)
+            ON CONFLICT(type, value) DO UPDATE SET
+                enabled=1,
+                keyword_group=CASE
+                    WHEN excluded.keyword_group != '' THEN excluded.keyword_group
+                    ELSE keywords.keyword_group
+                END''', (kw_type, value, group))
         conn.commit()
         return True
     except Exception:
@@ -180,6 +210,35 @@ def set_keyword_states(kw_type, states):
         for value, enabled in states.items():
             c.execute('UPDATE keywords SET enabled=? WHERE type=? AND value=?',
                       (1 if enabled else 0, kw_type, (value or '').lower().strip()))
+        conn.commit()
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def set_keyword_groups(kw_type, groups):
+    """Assign custom groups to saved keywords.
+
+    `groups` maps keyword value -> group name. An empty name clears the group so
+    the keyword falls back to its automatic scoring category.
+    """
+    if kw_type not in ('focus', 'exclude') or not isinstance(groups, dict):
+        return False
+    init_db()
+    conn = get_conn()
+    c = conn.cursor()
+    try:
+        for value, group in groups.items():
+            c.execute(
+                'UPDATE keywords SET keyword_group=? WHERE type=? AND value=?',
+                (
+                    normalize_keyword_group(group),
+                    kw_type,
+                    (value or '').lower().strip(),
+                ),
+            )
         conn.commit()
         return True
     except Exception:
@@ -367,10 +426,11 @@ def get_decision_reason_counts():
     return {r['reason']: r['n'] for r in rows}
 
 
-def add_keywords_bulk(kw_type, values):
+def add_keywords_bulk(kw_type, values, groups=None):
     """Insert several keywords in one transaction. Returns the count attempted."""
     if kw_type not in ('focus', 'exclude') or not isinstance(values, (list, tuple)):
         return 0
+    groups = groups if isinstance(groups, dict) else {}
     init_db()
     conn = get_conn()
     c = conn.cursor()
@@ -380,8 +440,14 @@ def add_keywords_bulk(kw_type, values):
             value = (value or '').lower().strip()
             if not value:
                 continue
-            c.execute('''INSERT INTO keywords(type, value, enabled) VALUES(?, ?, 1)
-                ON CONFLICT(type, value) DO UPDATE SET enabled=1''', (kw_type, value))
+            group = normalize_keyword_group(groups.get(value, ''))
+            c.execute('''INSERT INTO keywords(type, value, enabled, keyword_group) VALUES(?, ?, 1, ?)
+                ON CONFLICT(type, value) DO UPDATE SET
+                    enabled=1,
+                    keyword_group=CASE
+                        WHEN excluded.keyword_group != '' THEN excluded.keyword_group
+                        ELSE keywords.keyword_group
+                    END''', (kw_type, value, group))
             count += 1
         conn.commit()
         return count
@@ -399,11 +465,17 @@ def replace_keywords(kw_type, values):
     conn = get_conn()
     c = conn.cursor()
     try:
+        existing_groups = {
+            row['value']: row['keyword_group'] or ''
+            for row in c.execute(
+                'SELECT value, keyword_group FROM keywords WHERE type=?', (kw_type,)
+            ).fetchall()
+        }
         c.execute('DELETE FROM keywords WHERE type=?', (kw_type,))
         conn.commit()
     finally:
         conn.close()
-    return add_keywords_bulk(kw_type, values)
+    return add_keywords_bulk(kw_type, values, existing_groups)
 
 
 def save_jobs(jobs, source):

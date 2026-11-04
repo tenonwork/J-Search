@@ -197,5 +197,50 @@ class WeightSaveTests(unittest.TestCase):
         self.assertIn('numeric weight', handler.body['error'])
 
 
+class KeywordGroupTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.old_path = db.DB_PATH
+        db.DB_PATH = Path(self.tempdir.name) / 'groups.db'
+        db.init_db()
+
+    def tearDown(self):
+        db.DB_PATH = self.old_path
+        self.tempdir.cleanup()
+
+    def _item(self, kw_type, value):
+        return next(
+            item for item in db.get_keywords()[kw_type] if item['value'] == value
+        )
+
+    def test_add_and_clear_a_group(self):
+        self.assertTrue(db.add_keyword('focus', 'frontend', 'Frontend'))
+        self.assertEqual(self._item('focus', 'frontend')['group'], 'Frontend')
+
+        # Re-adding without a group must not erase the saved group.
+        self.assertTrue(db.add_keyword('focus', 'frontend'))
+        self.assertEqual(self._item('focus', 'frontend')['group'], 'Frontend')
+
+        self.assertTrue(db.set_keyword_groups('focus', {'frontend': ''}))
+        self.assertEqual(self._item('focus', 'frontend')['group'], '')
+
+    def test_replace_keeps_groups_for_surviving_keywords(self):
+        db.add_keyword('focus', 'react', 'UI')
+        db.add_keyword('focus', 'python', 'Data')
+
+        self.assertEqual(db.replace_keywords('focus', ['react', 'django']), 2)
+
+        self.assertEqual(self._item('focus', 'react')['group'], 'UI')
+        self.assertEqual(self._item('focus', 'django')['group'], '')
+
+    def test_legacy_migration_adds_group_column(self):
+        db.DB_PATH.unlink()
+        create_legacy_keywords_db(db.DB_PATH)
+
+        db.init_db()
+        db.add_keyword('focus', 'react', 'Frontend')
+        self.assertEqual(self._item('focus', 'react')['group'], 'Frontend')
+
+
 if __name__ == '__main__':
     unittest.main()

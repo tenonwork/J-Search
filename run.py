@@ -906,8 +906,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             try:
                 kw_type = data.get('type', 'focus')
                 value = data.get('value', '')
+                group = data.get('group', '')
                 if value:
-                    db.add_keyword(kw_type, value)
+                    db.add_keyword(kw_type, value, group)
             except Exception:
                 pass
             self._respond(200, b'{"status":"ok"}', 'application/json')
@@ -927,6 +928,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 kw_type = data.get('type', 'focus')
                 states = data.get('states', {})
                 db.set_keyword_states(kw_type, states)
+                groups = data.get('groups')
+                if isinstance(groups, dict):
+                    db.set_keyword_groups(kw_type, groups)
             except Exception:
                 pass
             self._respond(200, b'{"status":"ok"}', 'application/json')

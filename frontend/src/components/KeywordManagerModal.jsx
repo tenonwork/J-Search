@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   CheckCheck,
   EyeOff,
+  Folder,
   Loader2,
   Search,
   Settings2,
@@ -18,6 +19,7 @@ const TONE_DOT = {
   emerald: 'bg-emerald-400',
   amber: 'bg-amber-400',
   rose: 'bg-rose-400',
+  violet: 'bg-violet-400',
   slate: 'bg-slate-500',
 };
 
@@ -27,6 +29,7 @@ const TONE_BADGE = {
   emerald: 'border-emerald-400/20 bg-emerald-500/[0.08] text-emerald-200',
   amber: 'border-amber-400/20 bg-amber-500/[0.08] text-amber-200',
   rose: 'border-rose-400/20 bg-rose-500/[0.08] text-rose-200',
+  violet: 'border-violet-400/20 bg-violet-500/[0.08] text-violet-200',
   slate: 'border-white/[0.08] bg-white/[0.03] text-slate-400',
 };
 
@@ -37,11 +40,30 @@ function points(value) {
 }
 
 /**
- * Bucket the managed keywords by the same scoring groups used in the weights
- * form. Focus keywords map to the scoring lists they belong to; hide keywords
- * only split into dealbreakers and everything else.
+ * Split managed keywords into custom groups first, then the scoring categories
+ * used by the weights form. A custom group wins over the automatic category, so
+ * moving a keyword there removes it from its category section.
  */
 function buildSections(items, groups, type) {
+  const sections = new Map();
+
+  items.forEach((item) => {
+    const name = (item.group || '').trim();
+    if (!name) return;
+    if (!sections.has(name)) {
+      sections.set(name, {
+        key: `custom:${name}`,
+        label: name,
+        tone: 'violet',
+        weight: null,
+        kind: 'custom',
+        items: [],
+      });
+    }
+    sections.get(name).items.push(item);
+  });
+
+  const ungrouped = items.filter((item) => !(item.group || '').trim());
   const relevant = (groups || []).filter(
     (group) => !group.system && (type === 'exclude'
       ? group.key === 'dealbreaker_weight'
@@ -55,20 +77,20 @@ function buildSections(items, groups, type) {
     });
   });
 
-  const sections = new Map();
+  const scoringSections = new Map();
   relevant.forEach((group) => {
-    sections.set(group.key, {
+    scoringSections.set(group.key, {
       key: group.key,
       label: group.label,
       tone: group.tone || 'slate',
       weight: group.weight,
+      kind: 'scoring',
       items: [],
     });
   });
 
-  const otherKey = 'other';
-  sections.set(otherKey, {
-    key: otherKey,
+  const other = {
+    key: 'other',
     label: relevant.length
       ? type === 'focus'
         ? 'Other signals'
@@ -76,31 +98,45 @@ function buildSections(items, groups, type) {
       : 'All keywords',
     tone: 'slate',
     weight: null,
+    kind: 'scoring',
     items: [],
-  });
+  };
 
-  items.forEach((item) => {
+  ungrouped.forEach((item) => {
     const group = lookup.get(item.value);
-    const key = group && sections.has(group.key) ? group.key : otherKey;
-    sections.get(key).items.push(item);
+    const key = group && scoringSections.has(group.key) ? group.key : 'other';
+    if (key === 'other') other.items.push(item);
+    else scoringSections.get(key).items.push(item);
   });
 
-  return [...sections.values()].filter((section) => section.items.length);
+  const custom = [...sections.values()].sort((a, b) => a.label.localeCompare(b.label));
+
+  return [...custom, ...scoringSections.values(), other].filter(
+    (section) => section.items.length,
+  );
 }
 
 export default function KeywordManagerModal({ type, items, onClose, onSave }) {
   const [states, setStates] = useState({});
+  const [manualGroups, setManualGroups] = useState({});
   const [groups, setGroups] = useState([]);
   const [grouping, setGrouping] = useState(true);
   const [query, setQuery] = useState('');
+  const [newGroupFor, setNewGroupFor] = useState(null);
+  const [newGroupName, setNewGroupName] = useState('');
   const focus = type === 'focus';
 
   useEffect(() => {
-    const next = {};
+    const nextStates = {};
+    const nextGroups = {};
     items.forEach((item) => {
-      next[item.value] = !!item.enabled;
+      nextStates[item.value] = !!item.enabled;
+      nextGroups[item.value] = item.group || '';
     });
-    setStates(next);
+    setStates(nextStates);
+    setManualGroups(nextGroups);
+    setNewGroupFor(null);
+    setNewGroupName('');
   }, [items, type]);
 
   useEffect(() => {
@@ -122,7 +158,25 @@ export default function KeywordManagerModal({ type, items, onClose, onSave }) {
     };
   }, []);
 
-  const sections = useMemo(() => buildSections(items, groups, type), [items, groups, type]);
+  const enrichedItems = useMemo(
+    () => items.map((item) => ({
+      ...item,
+      group: manualGroups[item.value] ?? (item.group || ''),
+    })),
+    [items, manualGroups],
+  );
+
+  const groupNames = useMemo(
+    () => [...new Set(enrichedItems.map((item) => item.group).filter(Boolean))].sort(
+      (a, b) => a.localeCompare(b),
+    ),
+    [enrichedItems],
+  );
+
+  const sections = useMemo(
+    () => buildSections(enrichedItems, groups, type),
+    [enrichedItems, groups, type],
+  );
 
   const needle = query.trim().toLowerCase();
   const visibleSections = useMemo(
@@ -149,6 +203,21 @@ export default function KeywordManagerModal({ type, items, onClose, onSave }) {
     setStates(next);
   };
 
+  const setGroupFor = (value, name) => {
+    const clean = name.trim().slice(0, 40);
+    const canonical = clean
+      ? groupNames.find((group) => group.toLowerCase() === clean.toLowerCase()) || clean
+      : '';
+    setManualGroups((current) => ({ ...current, [value]: canonical }));
+  };
+
+  const commitNewGroup = (value) => {
+    const name = newGroupName.trim();
+    if (name) setGroupFor(value, name);
+    setNewGroupFor(null);
+    setNewGroupName('');
+  };
+
   const setGroup = (values, checked) => {
     setStates((current) => {
       const next = { ...current };
@@ -157,6 +226,18 @@ export default function KeywordManagerModal({ type, items, onClose, onSave }) {
       });
       return next;
     });
+  };
+
+  const save = () => {
+    const pendingGroups = { ...manualGroups };
+    if (newGroupFor && newGroupName.trim()) {
+      pendingGroups[newGroupFor] = newGroupName.trim().slice(0, 40);
+    }
+    const groupsPayload = {};
+    items.forEach((item) => {
+      groupsPayload[item.value] = pendingGroups[item.value] ?? (item.group || '');
+    });
+    onSave(states, groupsPayload);
   };
 
   return (
@@ -171,19 +252,20 @@ export default function KeywordManagerModal({ type, items, onClose, onSave }) {
           <button type="button" className="btn btn-secondary btn-sm" onClick={onClose}>
             Cancel
           </button>
-          <button
-            type="button"
-            className="btn btn-primary btn-sm"
-            onClick={() => onSave(states)}
-          >
+          <button type="button" className="btn btn-primary btn-sm" onClick={save}>
             Save changes
           </button>
         </>
       }
     >
       <p className="modal-copy">
-        Keywords are grouped by their scoring category. Uncheck one to pause it — paused keywords
-        stay saved and can be re-enabled later. Use the × on a chip to delete it permanently.
+        Keywords are grouped by scoring category or by the custom group you assign. Uncheck one to
+        pause it — paused keywords stay saved and can be re-enabled later. Use the × on a chip to
+        delete it permanently.
+      </p>
+      <p className="mt-1 text-[10px] leading-relaxed text-slate-600">
+        Custom groups only change how this list is organised; scoring still follows the category
+        lists and their weights.
       </p>
 
       <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -240,7 +322,11 @@ export default function KeywordManagerModal({ type, items, onClose, onSave }) {
               <section key={section.key} aria-label={`${section.label} keywords`}>
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
                   <div className="flex min-w-0 flex-wrap items-center gap-2">
-                    <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
+                    {section.kind === 'custom' ? (
+                      <Folder className="h-3 w-3 shrink-0 text-violet-300/80" />
+                    ) : (
+                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
+                    )}
                     <h3 className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
                       {section.label}
                     </h3>
@@ -271,10 +357,12 @@ export default function KeywordManagerModal({ type, items, onClose, onSave }) {
                 <div className="space-y-1.5">
                   {section.visible.map((item) => {
                     const checked = !!states[item.value];
+                    const group = manualGroups[item.value] ?? (item.group || '');
+
                     return (
-                      <label
+                      <div
                         key={item.value}
-                        className={`flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 text-[12px] transition ${
+                        className={`flex items-center gap-2 rounded-lg border transition ${
                           checked
                             ? focus
                               ? 'border-cyan-400/15 bg-cyan-400/[0.05] text-cyan-100'
@@ -282,26 +370,78 @@ export default function KeywordManagerModal({ type, items, onClose, onSave }) {
                             : 'border-white/[0.05] bg-white/[0.015] text-slate-500'
                         }`}
                       >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(event) => toggle(item.value, event.target.checked)}
-                          className="checkbox-dark"
-                        />
-                        {focus ? (
-                          <Sparkles className="h-3 w-3 opacity-50" />
-                        ) : (
-                          <EyeOff className="h-3 w-3 opacity-50" />
-                        )}
-                        <span className={checked ? '' : 'line-through decoration-slate-700'}>
-                          {item.value}
-                        </span>
-                        {!checked && (
-                          <span className="ml-auto text-[8px] font-semibold uppercase tracking-[0.14em] text-slate-600">
-                            paused
+                        <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 px-3 py-2.5 text-[12px]">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(event) => toggle(item.value, event.target.checked)}
+                            className="checkbox-dark"
+                          />
+                          {focus ? (
+                            <Sparkles className="h-3 w-3 shrink-0 opacity-50" />
+                          ) : (
+                            <EyeOff className="h-3 w-3 shrink-0 opacity-50" />
+                          )}
+                          <span
+                            className={`min-w-0 flex-1 truncate ${
+                              checked ? '' : 'line-through decoration-slate-700'
+                            }`}
+                          >
+                            {item.value}
                           </span>
+                          {!checked && (
+                            <span className="shrink-0 text-[8px] font-semibold uppercase tracking-[0.14em] text-slate-600">
+                              paused
+                            </span>
+                          )}
+                        </label>
+
+                        {newGroupFor === item.value ? (
+                          <input
+                            autoFocus
+                            type="text"
+                            value={newGroupName}
+                            maxLength={40}
+                            onChange={(event) => setNewGroupName(event.target.value)}
+                            onBlur={() => commitNewGroup(item.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                commitNewGroup(item.value);
+                              } else if (event.key === 'Escape') {
+                                setNewGroupFor(null);
+                                setNewGroupName('');
+                              }
+                            }}
+                            placeholder="Group name"
+                            aria-label={`New group for ${item.value}`}
+                            className="mr-2 h-7 w-[104px] shrink-0 rounded-md border border-violet-400/25 bg-violet-500/[0.06] px-1.5 text-[9px] text-violet-100 placeholder:text-violet-300/40 focus:border-violet-300/40 focus:outline-none focus:ring-2 focus:ring-violet-400/10 sm:w-[118px]"
+                          />
+                        ) : (
+                          <select
+                            value={group}
+                            onChange={(event) => {
+                              if (event.target.value === '__new') {
+                                setNewGroupFor(item.value);
+                                setNewGroupName('');
+                              } else {
+                                setGroupFor(item.value, event.target.value);
+                              }
+                            }}
+                            aria-label={`Group for ${item.value}`}
+                            title="Automatic grouping follows the scoring category; choose a group to organise it manually."
+                            className="mr-2 h-7 w-[104px] shrink-0 rounded-md border border-white/[0.07] bg-[#0d1320] px-1.5 text-[9px] text-slate-400 transition hover:border-white/[0.14] hover:text-slate-200 focus:border-violet-400/40 focus:outline-none focus:ring-2 focus:ring-violet-400/10 sm:w-[118px]"
+                          >
+                            <option value="">Auto category</option>
+                            {groupNames.map((name) => (
+                              <option value={name} key={name}>
+                                {name}
+                              </option>
+                            ))}
+                            <option value="__new">+ New group</option>
+                          </select>
                         )}
-                      </label>
+                      </div>
                     );
                   })}
                 </div>
