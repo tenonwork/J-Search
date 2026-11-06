@@ -26,6 +26,11 @@ export default function JobCard({ job, focused, onReview, onApplied, onDismiss }
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <span className="source-chip">{job.source === 'local' ? 'Local' : 'Global'}</span>
+              {job.teaser && (
+                <span className="inline-flex items-center rounded-md border border-amber-400/25 bg-amber-500/[0.08] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-amber-200">
+                  Teaser
+                </span>
+              )}
               {focused && (
                 <span className="inline-flex items-center gap-1 rounded-md border border-cyan-400/20 bg-cyan-400/[0.08] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-cyan-200">
                   <Sparkles className="h-2.5 w-2.5" />

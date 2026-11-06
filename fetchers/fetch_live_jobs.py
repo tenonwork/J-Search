@@ -86,31 +86,6 @@ def _fetch_jobicy():
         return []
 
 
-def _fetch_arbeitnow():
-    """Arbeitnow API."""
-    url = "https://www.arbeitnow.com/api/job-board-api"
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=20)
-        if r.status_code != 200:
-            return []
-        data = r.json()
-        raw = data.get('data', []) if isinstance(data, dict) else data
-        jobs = []
-        for job in raw:
-            location = job.get('location') or 'Remote'
-            jobs.append({
-                "title": job.get("title", "Untitled Role"),
-                "company": job.get("company_name") or job.get("company", "Unknown Company"),
-                "location": "Remote (" + str(location) + ")",
-                "url": job.get("url") or "#",
-                "desc": _strip_html(job.get("description", "")),
-            })
-        return jobs
-    except Exception as e:
-        print("  [Global][Arbeitnow] Failed: " + str(e))
-        return []
-
-
 def get_live_remote_jobs():
     """Fetch live remote jobs from every reachable global source, in parallel."""
     print("  [Global] Fetching from remote job sources...")
@@ -119,7 +94,6 @@ def get_live_remote_jobs():
         ("WorkingNomads", _fetch_workingnomads),
         ("Remotive", _fetch_remotive),
         ("Jobicy", _fetch_jobicy),
-        ("Arbeitnow", _fetch_arbeitnow),
     ]
 
     all_jobs = []

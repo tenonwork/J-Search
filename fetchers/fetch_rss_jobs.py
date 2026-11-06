@@ -1,7 +1,17 @@
+import re
 import feedparser
 import requests
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# RSS summaries shorter than this are teasers, not full descriptions.
+TEASER_DESCRIPTION_LIMIT = 400
+
+_TITLE_NOISE = re.compile(
+    r"\b(?:nurse|therapist|internship|werkstudent|sales|account executive)\b",
+    re.IGNORECASE,
+)
+_HOW_TO = re.compile(r"\bhow to\b", re.IGNORECASE)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -61,6 +71,7 @@ def _fetch_feed(source_name, feed_url):
                 "location": "Remote",
                 "url": link,
                 "desc": desc,
+                "teaser": len(desc) < TEASER_DESCRIPTION_LIMIT,
             })
         return jobs
     except Exception as e:
@@ -86,3 +97,20 @@ def get_rss_remote_jobs():
                 print(f"  [RSS Jobs][{source}] Error: {e}")
     
     return all_jobs
+
+
+def is_global_noise(job):
+    """Drop blog posts and titles that are not software roles.
+
+    EU Remote Jobs mixes articles into its feed. Nurse, sales and internship
+    titles show up on the other boards too, so those are checked everywhere.
+    """
+    title = job.get('title') or ''
+    url = (job.get('url') or '').lower()
+    if 'euremotejobs.com' in url and ('/blog/' in url or _HOW_TO.search(title)):
+        return True
+    return _TITLE_NOISE.search(title) is not None
+
+
+def without_global_noise(jobs):
+    return [job for job in jobs if not is_global_noise(job)]

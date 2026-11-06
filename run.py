@@ -25,7 +25,7 @@ from fetchers.fetch_local_merchants import get_local_board_jobs
 from fetchers.fetch_career_sites import (
     extract_urls, get_career_site_jobs, scan_career_site,
 )
-from fetchers.fetch_rss_jobs import get_rss_remote_jobs
+from fetchers.fetch_rss_jobs import get_rss_remote_jobs, without_global_noise
 from app.job_dashboard import (
     build_dashboard, get_scoring_config, score_job, _is_blocked, _matches_skill,
     job_key, passes_filters, merge_weight_overrides,
@@ -261,7 +261,8 @@ def _api_jobs():
                 "score": score,
                 "matches": goods,
                 "redFlags": bads,
-                "source": source
+                "source": source,
+                "teaser": bool(job.get('teaser')),
             })
     return all_jobs
 
@@ -443,10 +444,11 @@ def run_pipeline_global():
         rss_jobs = get_rss_remote_jobs()
 
         all_remote_combined = remote_jobs + rss_jobs
-        all_remote = _deduplicate_jobs(all_remote_combined)
+        all_remote = without_global_noise(_deduplicate_jobs(all_remote_combined))
         _global_jobs = all_remote
         try:
             db.save_jobs(_score_for_storage(_global_jobs, 'global'), 'global')
+            db.delete_jobs_not_in('global', [job.get('url') for job in _global_jobs])
         except Exception:
             pass
 
@@ -497,12 +499,13 @@ def run_pipeline_all():
         local_leads = _fetch_local_jobs()
 
         all_remote_combined = remote_jobs + rss_jobs
-        all_remote = _deduplicate_jobs(all_remote_combined)
+        all_remote = without_global_noise(_deduplicate_jobs(all_remote_combined))
         all_local = _deduplicate_jobs(local_leads)
         _global_jobs = all_remote
         _local_jobs = all_local
         try:
             db.save_jobs(_score_for_storage(_global_jobs, 'global'), 'global')
+            db.delete_jobs_not_in('global', [job.get('url') for job in _global_jobs])
             db.save_jobs(_score_for_storage(_local_jobs, 'local'), 'local')
         except Exception:
             pass

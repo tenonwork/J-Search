@@ -28,7 +28,9 @@ export function keywordsForScope(keywords, scope) {
 }
 
 export function matchingHighlights(job, filters) {
-  const text = `${job.title || ''} ${job.desc || ''}`.toLowerCase();
+  const text = (job.teaser
+    ? `${job.title || ''}`
+    : `${job.title || ''} ${job.desc || ''}`).toLowerCase();
   return enabledValues(filters, 'focus').filter((keyword) => skillMatches(text, keyword));
 }
 

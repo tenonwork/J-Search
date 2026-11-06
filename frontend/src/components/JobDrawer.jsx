@@ -119,6 +119,11 @@ export default function JobDrawer({ job, onClose, onApplied, onDismiss }) {
 
           <section className="border-t border-white/[0.06] px-5 py-5 sm:px-6">
             <h3 className="drawer-section-title">Role description</h3>
+            {job.teaser && (
+              <p className="mt-2 text-[11px] leading-relaxed text-amber-200/80">
+                Teaser only. Open the original page before judging this role.
+              </p>
+            )}
             <div className="mt-3 whitespace-pre-wrap text-[12px] leading-[1.75] text-slate-400">
               {description || 'No description was captured for this role. Open the original posting for the full details.'}
             </div>

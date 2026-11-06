@@ -30,7 +30,6 @@ DASHBOARD_SHELL = """<!DOCTYPE html>
 
 
 BLOCKED_DOMAINS = {
-    "remotive.com",
     "linkedin.com",
     "glassdoor.com",
     "ziprecruiter.com",
@@ -331,7 +330,10 @@ def score_job(job, config=None):
         config = DEFAULT_SCORING_CONFIG
 
     score = 0
-    text = ((job.get('title', '') or '') + " " + (job.get('desc', '') or '')).lower()
+    # A teaser is a two-line RSS summary. Score the title only so those
+    # keywords are not treated as a full description.
+    body = '' if job.get('teaser') else (job.get('desc', '') or '')
+    text = ((job.get('title', '') or '') + " " + body).lower()
 
     matches_found = []
     red_flags_found = []
@@ -445,6 +447,7 @@ def build_dashboard(remote_jobs=None, local_leads=None, config=None, configs=Non
             "matches": goods,
             "redFlags": bads,
             "source": source,
+            "teaser": bool(job.get('teaser')),
         })
 
     for job in remote_jobs:

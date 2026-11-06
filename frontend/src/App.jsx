@@ -194,6 +194,7 @@ export default function App({ bootstrap }) {
             matches: job.matches || [],
             red_flags: job.redFlags || [],
             highlights: matchingHighlights(job, activeFilters),
+            teaser: Boolean(job.teaser),
           })),
         }),
       });

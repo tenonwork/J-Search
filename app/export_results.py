@@ -76,6 +76,7 @@ def _job(item):
         'matches': _keyword_list(item.get('matches')),
         'red_flags': _keyword_list(item.get('red_flags')),
         'highlights': _keyword_list(item.get('highlights')),
+        'teaser': bool(item.get('teaser')),
     }
 
 
@@ -170,6 +171,10 @@ def _docx_document(snapshot):
         document.add_heading('Highlight keywords that fit', level=3)
         document.add_paragraph(_joined(job['highlights'], 'None'))
         document.add_heading('Description', level=3)
+        if job.get('teaser'):
+            document.add_paragraph(
+                'Teaser only. Open the original page before judging this role.'
+            )
         description = job['description'] or (
             'No description was captured for this role.'
         )

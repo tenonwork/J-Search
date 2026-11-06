@@ -44,8 +44,7 @@ The pipeline is split into five decoupled layers:
 | Global | Working Nomads | Public JSON API | Most reliable source in practice |
 | Global | Remotive | Public JSON API | Occasionally times out |
 | Global | Jobicy | Public JSON API | Occasionally times out |
-| Global | Arbeitnow | Public JSON API | Often unreachable |
-| Global | We Work Remotely, Jobspresso, EU Remote | RSS feeds | Fragile; treated as bonus sources |
+| Global | We Work Remotely, Jobspresso, EU Remote | RSS feeds | Fragile; treated as bonus sources. Short RSS summaries are marked as teasers and scored from the title only. EU Remote blog posts are dropped |
 | Local | BrighterMonday | HTML scraping | Software/Data, IT and Engineering categories |
 | Local | JobsInKenya | HTML scraping | Filtered to tech-relevant titles |
 | Local | DuckDuckGo HTML | Search scraping | Optional extra; frequently returns bot-challenge pages |
@@ -92,7 +91,7 @@ Presets are applied in the browser by the strictness toggle; the server scores e
 
 * **Bounded word matching** — `r'\bkeyword\b'` prevents false positives such as `pos` matching *position*, *composition* or *repository*.
 * **Hard drop vs penalty** — Remote listings with any dealbreaker are removed under Strict/Balanced. Local listings are only penalised, because board titles are terse and often miss obvious keywords.
-* **Blocklist** — Paywalled/gated hosts (`linkedin.com`, `glassdoor.com`, `remotive.com` listing pages, etc.) are dropped before rendering, regardless of score.
+* **Blocklist** — Paywalled or gated hosts (`linkedin.com`, `glassdoor.com`, and similar listing sites) are dropped before rendering, regardless of score. Remotive job links are kept. Arbeitnow is not fetched; it is a Europe-local board.
 
 ## Dashboard
 

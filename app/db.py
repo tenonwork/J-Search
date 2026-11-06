@@ -367,6 +367,9 @@ def init_db():
         updated_at TEXT NOT NULL DEFAULT ''
     )''')
     c.execute('CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status)')
+    job_columns = {row['name'] for row in c.execute('PRAGMA table_info(jobs)').fetchall()}
+    if 'teaser' not in job_columns:
+        c.execute('ALTER TABLE jobs ADD COLUMN teaser INTEGER NOT NULL DEFAULT 0')
     conn.commit()
     conn.close()
 
@@ -909,17 +912,37 @@ def apply_profile_keywords(profile, focus, exclude, mode='add', scopes=('global'
         conn.close()
 
 
+def delete_jobs_not_in(source, urls):
+    """Drop stored jobs from one source that were not in the latest fetch."""
+    urls = [url for url in urls if url]
+    if not urls:
+        return 0
+    init_db()
+    conn = get_conn()
+    c = conn.cursor()
+    placeholders = ','.join('?' for _ in urls)
+    c.execute(
+        f'DELETE FROM jobs WHERE source=? AND url NOT IN ({placeholders})',
+        (source, *urls),
+    )
+    removed = c.rowcount
+    conn.commit()
+    conn.close()
+    return removed
+
+
 def save_jobs(jobs, source):
     init_db()
     conn = get_conn()
     c = conn.cursor()
     for job in jobs:
         try:
-            c.execute('''INSERT OR REPLACE INTO jobs(title, company, location, url, description, source, score, matches, redflags)
-                VALUES(?,?,?,?,?,?,?,?,?)''',
+            c.execute('''INSERT OR REPLACE INTO jobs(title, company, location, url, description, source, score, matches, redflags, teaser)
+                VALUES(?,?,?,?,?,?,?,?,?,?)''',
                 (job.get('title'), job.get('company'), job.get('location'), job.get('url'),
                  job.get('desc'), source, job.get('score', 0),
-                 json.dumps(job.get('matches', [])), json.dumps(job.get('redFlags', []))))
+                 json.dumps(job.get('matches', [])), json.dumps(job.get('redFlags', [])),
+                 1 if job.get('teaser') else 0))
         except Exception:
             pass
     conn.commit()
@@ -948,7 +971,8 @@ def get_jobs(source=None):
             'source': r['source'],
             'score': r['score'],
             'matches': json.loads(r['matches'] or '[]'),
-            'redFlags': json.loads(r['redflags'] or '[]')
+            'redFlags': json.loads(r['redflags'] or '[]'),
+            'teaser': bool(r['teaser']) if 'teaser' in r.keys() else False,
         })
     return result
 
