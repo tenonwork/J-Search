@@ -49,6 +49,70 @@ class DashboardShellTests(unittest.TestCase):
         self.assertEqual(data['jobs'][0]['source'], 'global')
         self.assertTrue(data['jobs'][0]['key'])
 
+    def test_each_source_is_scored_with_its_own_config(self):
+        job = {
+            'title': 'Zebra Engineer',
+            'company': 'Example Co',
+            'location': 'Remote',
+            'url': 'https://example.com/jobs/zebra',
+            'desc': '',
+        }
+        global_config = job_dashboard.get_scoring_config('balanced', {
+            'core_skills': ['react'],
+            'ai_skills': [],
+            'good_matches': [],
+            'pos_skills': [],
+            'dealbreakers': [],
+            'core_weight': 10,
+        })
+        local_config = job_dashboard.get_scoring_config('balanced', {
+            'core_skills': ['zebra'],
+            'ai_skills': [],
+            'good_matches': [],
+            'pos_skills': [],
+            'dealbreakers': [],
+            'core_weight': 10,
+        })
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / 'dashboard.html'
+            with mock.patch.object(job_dashboard, 'DASHBOARD_PATH', target):
+                job_dashboard.build_dashboard(
+                    remote_jobs=[dict(job, url='https://example.com/jobs/global')],
+                    local_leads=[dict(job, url='https://example.com/jobs/local')],
+                    configs={'global': global_config, 'local': local_config},
+                )
+
+            html = target.read_text(encoding='utf-8')
+
+        payload = html.split('window.__JSEARCH_BOOTSTRAP__ = ', 1)[1].split(
+            ';</script>', 1
+        )[0]
+        data = json.loads(payload)
+        scores = {item['source']: item['score'] for item in data['jobs']}
+        self.assertEqual(scores['global'], 0)
+        self.assertEqual(scores['local'], 10)
+
+
+class AbortedDownloadTests(unittest.TestCase):
+    def test_aborted_dashboard_write_does_not_propagate(self):
+        import run
+
+        with tempfile.TemporaryDirectory() as tmp:
+            page = Path(tmp) / 'dashboard.html'
+            page.write_bytes(b'<html></html>')
+            handler = run.DashboardHandler.__new__(run.DashboardHandler)
+            handler.wfile = mock.Mock()
+            handler.wfile.write.side_effect = ConnectionAbortedError()
+            handler.send_response = mock.Mock()
+            handler.send_header = mock.Mock()
+            handler.end_headers = mock.Mock()
+
+            run.DashboardHandler._serve_file(handler, page, 'text/html')
+
+        handler.send_response.assert_called_once_with(200)
+        handler.wfile.write.assert_called_once_with(b'<html></html>')
+
 
 if __name__ == '__main__':
     unittest.main()

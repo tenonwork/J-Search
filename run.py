@@ -28,8 +28,8 @@ from fetchers.fetch_career_sites import (
 from fetchers.fetch_rss_jobs import get_rss_remote_jobs
 from app.job_dashboard import (
     build_dashboard, get_scoring_config, score_job, _is_blocked, _matches_skill,
-    job_key, passes_filters, effective_profile, merge_weight_overrides,
-    weights_view, WEIGHT_FIELDS,
+    job_key, passes_filters, merge_weight_overrides,
+    profile_from_config, weights_view, WEIGHT_FIELDS,
 )
 from app.applied_page import build_decisions_page
 from app.env import load_dotenv
@@ -48,7 +48,6 @@ _pipeline_running = False
 _global_jobs = []
 _local_jobs = []
 _scoring_profile = None
-_current_config = get_scoring_config("balanced")
 
 # Short-lived server-side previews for the Local Sources review gate.
 _scan_cache = {}
@@ -105,13 +104,26 @@ def _fetch_local_jobs():
 
 
 def _load_scoring_profile():
-    global _scoring_profile, _current_config
+    global _scoring_profile
     try:
         _scoring_profile = db.get_scoring_profile()
     except Exception as e:
         print('[DB] Could not load scoring profile:', e)
         _scoring_profile = None
-    _current_config = get_scoring_config("balanced", _scoring_profile)
+
+
+def _profile_for_scope(scope):
+    """Shared weights plus the enabled keyword lists for one source."""
+    profile = dict(_scoring_profile or {})
+    try:
+        profile.update(db.get_scoring_lists(scope))
+    except Exception as e:
+        print('[DB] Could not load keywords:', e)
+    return profile
+
+
+def _config_for(scope, preset="balanced"):
+    return get_scoring_config(preset, _profile_for_scope(scope))
 
 
 _load_scoring_profile()
@@ -149,11 +161,12 @@ def _prompt_for_missing_api_key():
         print('[LLM] No key entered. CV analysis will be unavailable until configured.')
 
 
-def _score_for_storage(jobs):
+def _score_for_storage(jobs, scope='global'):
     """Attach score/matches/redFlags so the DB stores meaningful values."""
+    config = _config_for(scope)
     scored = []
     for job in jobs:
-        score, goods, bads = score_job(job, _current_config)
+        score, goods, bads = score_job(job, config)
         enriched = dict(job)
         enriched['score'] = score
         enriched['matches'] = goods
@@ -213,7 +226,10 @@ def _build_dashboard():
         build_dashboard(
             remote_jobs=_global_jobs,
             local_leads=_local_jobs,
-            config=_current_config,
+            configs={
+                'global': _config_for('global'),
+                'local': _config_for('local'),
+            },
             exclude_keys=_decision_keys(),
             applied_count=counts['applied_count'],
             dismissed_count=counts['dismissed_count'],
@@ -225,6 +241,7 @@ def _api_jobs():
     exclude = _decision_keys()
     all_jobs = []
     for source, jobs in (('global', _global_jobs), ('local', _local_jobs)):
+        config = _config_for(source)
         for job in jobs:
             url = job.get('url', '')
             if _is_blocked(url):
@@ -233,7 +250,7 @@ def _api_jobs():
                           job.get('location', ''))
             if key in exclude:
                 continue
-            score, goods, bads = score_job(job, _current_config)
+            score, goods, bads = score_job(job, config)
             all_jobs.append({
                 "key": key,
                 "title": job.get('title'),
@@ -249,51 +266,87 @@ def _api_jobs():
     return all_jobs
 
 
-def _enabled_keywords(kind):
+def _enabled_keywords(kind, scope='global'):
     try:
         return [
-            item['value'] for item in db.get_keywords().get(kind, [])
+            item['value'] for item in db.get_keywords(scope).get(kind, [])
             if item.get('enabled')
         ]
     except Exception:
         return []
 
 
-def _impact(profile, exclude, focus, strictness='balanced'):
+def _merge_values(base, extra):
+    out = []
+    seen = set()
+    for value in list(base or []) + list(extra or []):
+        if value and value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
+
+
+def _impact(profile, exclude, focus, strictness='balanced', scope='global',
+            mode='add'):
     """Compare visibility under the current and proposed configurations."""
     if strictness not in ('strict', 'balanced', 'lenient'):
         strictness = 'balanced'
-    current_config = get_scoring_config(strictness, _scoring_profile)
-    proposed = get_scoring_config(strictness, profile)
-    current_exclude = _enabled_keywords('exclude')
-    current_focus = _enabled_keywords('focus')
+    scope = scope if scope in ('global', 'local', 'both') else 'global'
+    targets = {'global', 'local'} if scope == 'both' else {scope}
     exclude = [value for value in (exclude or []) if value]
     focus = [value for value in (focus or []) if value]
-
-    def visible(job, source, config, excludes):
-        item = dict(job)
-        item['source'] = source
-        return passes_filters(item, config, strictness, excludes)
-
-    def focused(job, keywords):
-        text = ((job.get('title') or '') + ' ' + (job.get('desc') or '')).lower()
-        return any(_matches_skill(text, keyword) for keyword in keywords)
 
     before = after = scoring_only = newly_highlighted = 0
     per_source = {}
     for source, jobs in (('global', _global_jobs), ('local', _local_jobs)):
         usable = [job for job in jobs if not _is_blocked(job.get('url', ''))]
+        current_config = _config_for(source, strictness)
+        current_exclude = _enabled_keywords('exclude', source)
+        current_focus = _enabled_keywords('focus', source)
+
+        if source in targets:
+            proposed_profile = dict(profile or {})
+            if mode != 'replace':
+                current_lists = _profile_for_scope(source)
+                for field in (
+                    'core_skills', 'ai_skills', 'good_matches',
+                    'pos_skills', 'dealbreakers',
+                ):
+                    proposed_profile[field] = _merge_values(
+                        current_lists.get(field, []),
+                        proposed_profile.get(field, []),
+                    )
+            proposed = get_scoring_config(strictness, proposed_profile)
+            next_exclude = (
+                exclude if mode == 'replace'
+                else _merge_values(current_exclude, exclude)
+            )
+            next_focus = (
+                focus if mode == 'replace'
+                else _merge_values(current_focus, focus)
+            )
+        else:
+            proposed = current_config
+            next_exclude = current_exclude
+            next_focus = current_focus
+
+        def visible(job, config, excludes):
+            item = dict(job)
+            item['source'] = source
+            return passes_filters(item, config, strictness, excludes)
+
+        def focused(job, keywords):
+            text = ((job.get('title') or '') + ' ' + (job.get('desc') or '')).lower()
+            return any(_matches_skill(text, keyword) for keyword in keywords)
+
         source_before = sum(
-            1 for job in usable
-            if visible(job, source, current_config, current_exclude)
+            1 for job in usable if visible(job, current_config, current_exclude)
         )
         source_scoring = sum(
-            1 for job in usable
-            if visible(job, source, proposed, current_exclude)
+            1 for job in usable if visible(job, proposed, current_exclude)
         )
         source_after = sum(
-            1 for job in usable
-            if visible(job, source, proposed, exclude)
+            1 for job in usable if visible(job, proposed, next_exclude)
         )
         per_source[source] = {'before': source_before, 'after': source_after}
         before += source_before
@@ -301,8 +354,8 @@ def _impact(profile, exclude, focus, strictness='balanced'):
         after += source_after
         for job in usable:
             if (
-                visible(job, source, proposed, exclude)
-                and focused(job, focus)
+                visible(job, proposed, next_exclude)
+                and focused(job, next_focus)
                 and not focused(job, current_focus)
             ):
                 newly_highlighted += 1
@@ -321,23 +374,61 @@ def _impact(profile, exclude, focus, strictness='balanced'):
 
 def _api_profile():
     return {
-        'profile': effective_profile(_scoring_profile),
-        'effective': _current_config,
+        'profile': profile_from_config(_config_for('global')),
+        'effective': _config_for('global'),
+        'effective_scopes': {
+            'global': _config_for('global'),
+            'local': _config_for('local'),
+        },
         'candidate': db.get_candidate_profile(),
         'reason_counts': db.get_decision_reason_counts(),
         'llm': llm_client.public_config(),
     }
 
 
-def _weights_payload():
+def _weights_payload(scope='global'):
     """Current score weights plus the keyword lists they apply to."""
-    payload = weights_view(_current_config, _scoring_profile)
-    payload['focus'] = _enabled_keywords('focus')
-    payload['exclude'] = _enabled_keywords('exclude')
+    scope = scope if scope in db.KEYWORD_SCOPES else 'global'
+    payload = weights_view(_config_for(scope), _scoring_profile)
+    payload['focus'] = _enabled_keywords('focus', scope)
+    payload['exclude'] = _enabled_keywords('exclude', scope)
+    payload['scope'] = scope
     payload['saved'] = bool(_scoring_profile) and any(
         key in _scoring_profile for key in WEIGHT_FIELDS
     )
     return payload
+
+
+def _workspace_payload():
+    """Everything the unified keyword/weight modal needs in one payload."""
+    view = weights_view(_config_for('global'), _scoring_profile)
+    groups = [
+        {
+            'key': group['key'],
+            'list_field': group['list_field'],
+            'label': group['label'],
+            'description': group['description'],
+            'tone': group['tone'],
+            'min': group['min'],
+            'max': group['max'],
+        }
+        for group in view['groups']
+    ]
+    scopes = {scope: [] for scope in db.KEYWORD_SCOPES}
+    try:
+        for row in db.get_keyword_rows():
+            scopes.setdefault(row['scope'], []).append(row)
+    except Exception as e:
+        print('[DB] Could not load keyword workspace:', e)
+    return {
+        'weights': view['weights'],
+        'defaults': view['defaults'],
+        'groups': groups,
+        'scopes': scopes,
+        'saved': bool(_scoring_profile) and any(
+            key in _scoring_profile for key in WEIGHT_FIELDS
+        ),
+    }
 
 
 def run_pipeline_global():
@@ -355,7 +446,7 @@ def run_pipeline_global():
         all_remote = _deduplicate_jobs(all_remote_combined)
         _global_jobs = all_remote
         try:
-            db.save_jobs(_score_for_storage(_global_jobs), 'global')
+            db.save_jobs(_score_for_storage(_global_jobs, 'global'), 'global')
         except Exception:
             pass
 
@@ -380,7 +471,7 @@ def run_pipeline_local():
         all_local = _deduplicate_jobs(local_leads)
         _local_jobs = all_local
         try:
-            db.save_jobs(_score_for_storage(_local_jobs), 'local')
+            db.save_jobs(_score_for_storage(_local_jobs, 'local'), 'local')
         except Exception:
             pass
 
@@ -411,8 +502,8 @@ def run_pipeline_all():
         _global_jobs = all_remote
         _local_jobs = all_local
         try:
-            db.save_jobs(_score_for_storage(_global_jobs), 'global')
-            db.save_jobs(_score_for_storage(_local_jobs), 'local')
+            db.save_jobs(_score_for_storage(_global_jobs, 'global'), 'global')
+            db.save_jobs(_score_for_storage(_local_jobs, 'local'), 'local')
         except Exception:
             pass
 
@@ -514,6 +605,15 @@ LOADING_PAGE = """<!DOCTYPE html>
 """
 
 
+# The browser closes the socket when a refresh or a second tab cancels an
+# in-flight download. That is not a failed request.
+_CLIENT_DISCONNECT_ERRORS = (
+    BrokenPipeError,
+    ConnectionAbortedError,
+    ConnectionResetError,
+)
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
 
     def _read_json(self):
@@ -602,6 +702,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         data = self._read_json()
         cv_text = str(data.get('cv_text') or '')
         preferences = str(data.get('preferences') or '')
+        scope = data.get('scope') if data.get('scope') in db.KEYWORD_SCOPES else 'global'
         if len(cv_text.strip()) < 40:
             self._respond_json(400, {'error': 'Paste a few lines of your CV first.'})
             return
@@ -620,9 +721,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             proposal = cv_profile.build_proposal(
                 analysis,
                 preferences=preferences,
-                current_profile=_scoring_profile,
-                current_focus=_enabled_keywords('focus'),
-                current_exclude=_enabled_keywords('exclude'),
+                current_profile=_profile_for_scope(scope),
+                current_focus=_enabled_keywords('focus', scope),
+                current_exclude=_enabled_keywords('exclude', scope),
                 reason_counts=reason_counts,
             )
             proposal['warnings'] = warnings + proposal.get('warnings', [])
@@ -632,6 +733,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 [item['value'] for item in proposal['exclude'] if item['checked']],
                 proposal['focus'],
                 strictness=data.get('strictness', 'balanced'),
+                scope=data.get('scope', 'global'),
+                mode='add',
             )
         except Exception as exc:
             self._respond_json(500, {'error': 'Could not build the proposal: ' + str(exc)})
@@ -653,6 +756,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             impact = _impact(
                 profile, exclude, focus,
                 strictness=data.get('strictness', 'balanced'),
+                scope=data.get('scope', 'global'),
+                mode=data.get('mode', 'add'),
             )
         except Exception as exc:
             self._respond_json(400, {'error': 'Could not preview that profile: ' + str(exc)})
@@ -669,18 +774,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._respond_json(400, {'error': 'Invalid profile: ' + str(exc)})
             return
 
+        requested = data.get('scope', 'global')
+        if requested == 'both':
+            scopes = list(db.KEYWORD_SCOPES)
+        elif requested in db.KEYWORD_SCOPES:
+            scopes = [requested]
+        else:
+            scopes = ['global']
+        mode = 'replace' if data.get('mode') == 'replace' else 'add'
+
         if not db.save_scoring_profile(profile):
             self._respond_json(500, {'error': 'Could not save the scoring profile.'})
             return
 
-        if data.get('mode') == 'replace':
-            focus_written = db.replace_keywords('focus', focus)
-            exclude_written = db.replace_keywords('exclude', exclude)
-        else:
-            focus_written = db.add_keywords_bulk('focus', focus)
-            exclude_written = db.add_keywords_bulk('exclude', exclude)
-
-        if (focus and not focus_written) or (exclude and not exclude_written):
+        if not db.apply_profile_keywords(profile, focus, exclude, mode, scopes):
             self._respond_json(500, {
                 'error': 'Could not save the imported keywords. Check the database and try again.',
             })
@@ -693,6 +800,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             'reload': True,
             'focus_count': len(focus),
             'exclude_count': len(exclude),
+            'scope': requested if requested in ('global', 'local', 'both') else 'global',
+            'scopes': scopes,
+            'mode': mode,
         })
 
     def _handle_profile_reset(self):
@@ -801,7 +911,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             _load_jobs_from_db()
             _local_jobs = _deduplicate_jobs((_local_jobs or []) + jobs)
             try:
-                db.save_jobs(_score_for_storage(jobs), 'local')
+                db.save_jobs(_score_for_storage(jobs, 'local'), 'local')
             except Exception:
                 pass
             _build_dashboard()
@@ -878,13 +988,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == '/hidden':
             self._serve_decisions_page('dismissed')
         elif path == '/api/keywords':
-            kws = db.get_keywords()
-            body = json.dumps(kws).encode('utf-8')
+            payload = {
+                scope: db.get_keywords(scope)
+                for scope in db.KEYWORD_SCOPES
+            }
+            payload['focus'] = payload['global']['focus']
+            payload['exclude'] = payload['global']['exclude']
+            body = json.dumps(payload).encode('utf-8')
             self._respond(200, body, 'application/json')
         elif path == '/api/profile':
             self._respond_json(200, _api_profile())
         elif path == '/api/weights':
-            self._respond_json(200, _weights_payload())
+            scope = parse_qs(urlparse(self.path).query).get('scope', ['global'])[0]
+            self._respond_json(200, _weights_payload(scope))
+        elif path == '/api/keyword-workspace':
+            self._respond_json(200, _workspace_payload())
         elif path == '/api/local-sites':
             self._respond_json(200, {'sites': db.get_local_sites()})
         elif path == '/api/discovery-queries':
@@ -913,9 +1031,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             try:
                 kw_type = data.get('type', 'focus')
                 value = data.get('value', '')
-                group = data.get('group', '')
+                scope = data.get('scope', 'global')
+                weight_group = data.get('weight_group', data.get('group', ''))
                 if value:
-                    db.add_keyword(kw_type, value, group)
+                    db.add_keyword(kw_type, value, weight_group, scope)
             except Exception:
                 pass
             self._respond(200, b'{"status":"ok"}', 'application/json')
@@ -924,8 +1043,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             try:
                 kw_type = data.get('type', 'focus')
                 values = data.get('values', [])
+                scope = data.get('scope', 'global')
                 if values:
-                    db.delete_keywords(kw_type, values)
+                    db.delete_keywords(kw_type, values, scope)
             except Exception:
                 pass
             self._respond(200, b'{"status":"ok"}', 'application/json')
@@ -934,13 +1054,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
             try:
                 kw_type = data.get('type', 'focus')
                 states = data.get('states', {})
-                db.set_keyword_states(kw_type, states)
-                groups = data.get('groups')
-                if isinstance(groups, dict):
-                    db.set_keyword_groups(kw_type, groups)
+                scope = data.get('scope', 'global')
+                db.set_keyword_states(kw_type, states, scope)
             except Exception:
                 pass
             self._respond(200, b'{"status":"ok"}', 'application/json')
+        elif path == '/api/keyword-workspace':
+            data = self._read_json()
+            scopes = data.get('scopes')
+            if not isinstance(scopes, dict) or any(
+                not isinstance(scopes.get(scope), (list, tuple))
+                for scope in db.KEYWORD_SCOPES
+            ):
+                self._respond_json(400, {
+                    'error': 'Send both Global and Local keyword lists.',
+                })
+                return
+            if not db.save_workspace(data.get('weights'), scopes):
+                self._respond_json(400, {
+                    'error': 'Could not save: add at least one weight and valid keywords.',
+                })
+                return
+            _load_scoring_profile()
+            _build_dashboard()
+            payload = _workspace_payload()
+            payload['status'] = 'ok'
+            self._respond_json(200, payload)
         elif path == '/api/decisions':
             data = self._read_json()
             key = str(data.get('key') or '').strip()[:500]
@@ -1031,22 +1170,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             with open(filename, 'rb') as f:
                 data = f.read()
+        except FileNotFoundError:
+            self._respond(404, b'File not found.')
+            return
+        try:
             self.send_response(200)
             self.send_header('Content-Type', content_type)
             self.send_header('Content-Length', len(data))
             self.send_header('Cache-Control', 'no-store, max-age=0')
             self.end_headers()
             self.wfile.write(data)
-        except FileNotFoundError:
-            self._respond(404, b'File not found.')
+        except _CLIENT_DISCONNECT_ERRORS:
+            return
 
     def _respond(self, code, body, content_type='text/plain'):
-        self.send_response(code)
-        self.send_header('Content-Type', content_type)
-        self.send_header('Content-Length', len(body))
-        self.send_header('Cache-Control', 'no-store, max-age=0')
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header('Content-Type', content_type)
+            self.send_header('Content-Length', len(body))
+            self.send_header('Cache-Control', 'no-store, max-age=0')
+            self.end_headers()
+            self.wfile.write(body)
+        except _CLIENT_DISCONNECT_ERRORS:
+            return
 
     def log_message(self, fmt, *args):
         pass

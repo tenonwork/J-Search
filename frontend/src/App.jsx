@@ -6,33 +6,32 @@ import FilterBar from './components/FilterBar';
 import JobCard from './components/JobCard';
 import JobDrawer from './components/JobDrawer';
 import EmptyState from './components/EmptyState';
-import KeywordManagerModal from './components/KeywordManagerModal';
-import DeleteKeywordModal from './components/DeleteKeywordModal';
+import KeywordWorkspaceModal from './components/KeywordWorkspaceModal';
 import DecisionModal from './components/DecisionModal';
 import LocalSourcesModal from './components/LocalSourcesModal';
 import ProfileModal from './components/ProfileModal';
-import ScoringWeightsModal from './components/ScoringWeightsModal';
 import Pagination from './components/Pagination';
 import Toast from './components/Toast';
 import { api } from './lib/api';
-import { isFocused, passesFilters, sortJobs } from './lib/utils';
+import { isFocused, keywordsForScope, passesFilters, sortJobs } from './lib/utils';
 import { paginate } from './lib/pagination';
 
 export default function App({ bootstrap }) {
   const [jobs, setJobs] = useState(Array.isArray(bootstrap.jobs) ? bootstrap.jobs : []);
-  const [filters, setFilters] = useState({ focus: [], exclude: [] });
+  const [keywords, setKeywords] = useState({
+    global: { focus: [], exclude: [] },
+    local: { focus: [], exclude: [] },
+  });
   const [tab, setTab] = useState('global');
   const [strictness, setStrictness] = useState('balanced');
   const [sortOrder, setSortOrder] = useState('recommended');
   const [appliedCount, setAppliedCount] = useState(Number(bootstrap.appliedCount) || 0);
   const [hiddenCount, setHiddenCount] = useState(Number(bootstrap.dismissedCount) || 0);
-  const [keywordType, setKeywordType] = useState(null);
-  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [workspaceScope, setWorkspaceScope] = useState(null);
   const [decisionJob, setDecisionJob] = useState(null);
   const [drawerJob, setDrawerJob] = useState(null);
   const [localOpen, setLocalOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
-  const [weightsOpen, setWeightsOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [toast, setToast] = useState(null);
   const feedRef = useRef(null);
@@ -46,7 +45,16 @@ export default function App({ bootstrap }) {
   const loadKeywords = useCallback(async () => {
     try {
       const data = await api('/api/keywords');
-      setFilters({ focus: data.focus || [], exclude: data.exclude || [] });
+      setKeywords({
+        global: {
+          focus: data.global?.focus || [],
+          exclude: data.global?.exclude || [],
+        },
+        local: {
+          focus: data.local?.focus || [],
+          exclude: data.local?.exclude || [],
+        },
+      });
     } catch {
       notify('Could not load keywords');
     }
@@ -101,44 +109,6 @@ export default function App({ bootstrap }) {
     }
   };
 
-  const addKeyword = async (type, value, group = '') => {
-    try {
-      await api('/api/keywords/add', 'POST', { type, value, group });
-      await loadKeywords();
-      notify(group ? `Added “${value}” to ${group}` : `Added “${value}”`);
-      return true;
-    } catch {
-      notify('Could not add keyword');
-      return false;
-    }
-  };
-
-  const confirmDeleteKeyword = async () => {
-    if (!deleteTarget) return;
-    const target = deleteTarget;
-    setDeleteTarget(null);
-    try {
-      await api('/api/keywords/delete', 'POST', { type: target.type, values: [target.value] });
-      await loadKeywords();
-      notify(`Deleted “${target.value}”`);
-    } catch {
-      notify('Could not delete keyword');
-    }
-  };
-
-  const saveKeywordStates = async (states, groups) => {
-    if (!keywordType) return;
-    const type = keywordType;
-    try {
-      await api('/api/keywords/state', 'POST', { type, states, groups });
-      setKeywordType(null);
-      await loadKeywords();
-      notify('Keyword settings saved');
-    } catch {
-      notify('Could not save keyword settings');
-    }
-  };
-
   const refreshJobs = async () => {
     try {
       const data = await api('/api/jobs');
@@ -163,11 +133,9 @@ export default function App({ bootstrap }) {
     if (job) await decide(job, 'dismissed', reason, note);
   };
 
-  const activeFocus = filters.focus.filter((item) => item.enabled).length;
-  const activeExclude = filters.exclude.filter((item) => item.enabled).length;
-  const pausedCount =
-    filters.focus.filter((item) => !item.enabled).length +
-    filters.exclude.filter((item) => !item.enabled).length;
+  const activeFilters = keywordsForScope(keywords, tab);
+  const activeFocus = activeFilters.focus.filter((item) => item.enabled).length;
+  const activeExclude = activeFilters.exclude.filter((item) => item.enabled).length;
 
   const tabCounts = useMemo(
     () => ({
@@ -179,16 +147,16 @@ export default function App({ bootstrap }) {
 
   const visibleJobs = useMemo(() => {
     const filtered = jobs.filter(
-      (job) => job.source === tab && passesFilters(job, filters, strictness),
+      (job) => job.source === tab && passesFilters(job, activeFilters, strictness),
     );
     return sortJobs(filtered, sortOrder);
-  }, [jobs, tab, filters, strictness, sortOrder]);
+  }, [jobs, tab, activeFilters, strictness, sortOrder]);
 
   const pageData = useMemo(() => paginate(visibleJobs, page), [visibleJobs, page]);
 
   useEffect(() => {
     setPage(1);
-  }, [tab, filters, strictness, sortOrder]);
+  }, [tab, keywords, strictness, sortOrder]);
 
   useEffect(() => {
     if (page > pageData.totalPages) setPage(pageData.totalPages);
@@ -223,16 +191,11 @@ export default function App({ bootstrap }) {
 
         <div className="mt-4 space-y-4">
           <PreferencesPanel
-            filters={filters}
-            activeFocus={activeFocus}
-            activeExclude={activeExclude}
-            pausedCount={pausedCount}
-            onAddKeyword={addKeyword}
-            onDeleteKeyword={(type, value) => setDeleteTarget({ type, value })}
-            onManageKeywords={setKeywordType}
+            keywords={keywords}
+            activeScope={tab}
+            onManageKeywords={setWorkspaceScope}
             onOpenLocalSources={() => setLocalOpen(true)}
             onOpenProfile={() => setProfileOpen(true)}
-            onOpenWeights={() => setWeightsOpen(true)}
           />
 
           <FilterBar
@@ -277,7 +240,7 @@ export default function App({ bootstrap }) {
                 <JobCard
                   key={job.key || `${job.source}-${job.url}-${job.title}`}
                   job={job}
-                  focused={isFocused(job, filters)}
+                  focused={isFocused(job, activeFilters)}
                   onReview={setDrawerJob}
                   onApplied={(target) => decide(target, 'applied')}
                   onDismiss={setDecisionJob}
@@ -313,20 +276,16 @@ export default function App({ bootstrap }) {
         </footer>
       </main>
 
-      {keywordType && (
-        <KeywordManagerModal
-          type={keywordType}
-          items={filters[keywordType]}
-          onClose={() => setKeywordType(null)}
-          onSave={saveKeywordStates}
-        />
-      )}
-
-      {deleteTarget && (
-        <DeleteKeywordModal
-          pending={deleteTarget}
-          onClose={() => setDeleteTarget(null)}
-          onConfirm={confirmDeleteKeyword}
+      {workspaceScope && (
+        <KeywordWorkspaceModal
+          defaultScope={workspaceScope}
+          onClose={() => setWorkspaceScope(null)}
+          onSaved={async () => {
+            setWorkspaceScope(null);
+            await loadKeywords();
+            await refreshJobs();
+            notify('Keyword workspace saved — scores refreshed');
+          }}
         />
       )}
 
@@ -347,18 +306,10 @@ export default function App({ bootstrap }) {
       )}
 
       {profileOpen && (
-        <ProfileModal strictness={strictness} onClose={() => setProfileOpen(false)} />
-      )}
-
-      {weightsOpen && (
-        <ScoringWeightsModal
+        <ProfileModal
           strictness={strictness}
-          onClose={() => setWeightsOpen(false)}
-          onSaved={async () => {
-            setWeightsOpen(false);
-            await refreshJobs();
-            notify('Keyword weights saved — scores refreshed');
-          }}
+          defaultScope={tab}
+          onClose={() => setProfileOpen(false)}
         />
       )}
 

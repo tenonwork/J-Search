@@ -51,6 +51,7 @@ DEFAULT_SCORING_CONFIG = {
     "ai_weight": 5,
     "good_matches": ["nairobi", "remote", "hybrid", "mid-level", "mid level", "contract", "point of sale"],
     "good_weight": 5,
+    "pos_skills": ["pos"],
     "pos_weight": 5,
     "dealbreakers": ["senior", "lead", "staff", "architect", "manager", "10+ years", "8+ years", "phd", "clearance required"],
     "dealbreaker_weight": -30,
@@ -69,13 +70,13 @@ PROFILE_FIELDS = (
     "core_skills", "core_weight",
     "ai_skills", "ai_weight",
     "good_matches", "good_weight",
-    "pos_weight",
+    "pos_skills", "pos_weight",
     "dealbreakers", "dealbreaker_weight",
 )
 
 # The editable score weights, in the order the dashboard shows them. `list_field`
-# points at the keyword list each weight applies to; POS is a built-in rule with
-# no editable list of its own.
+# points at the keyword list each weight applies to. POS is a normal, editable
+# group like the rest.
 WEIGHT_GROUPS = (
     {
         "key": "core_weight",
@@ -106,9 +107,9 @@ WEIGHT_GROUPS = (
     },
     {
         "key": "pos_weight",
-        "list_field": None,
+        "list_field": "pos_skills",
         "label": "POS systems",
-        "description": "Built-in boost for roles whose text mentions POS. Not tied to an editable list.",
+        "description": "Point-of-sale terms such as pos, till or checkout. Each match adds the POS weight.",
         "tone": "amber",
         "min": 0,
         "max": 100,
@@ -130,6 +131,7 @@ _PROFILE_LIST_FIELDS = {
     "core_skills": 60,
     "ai_skills": 40,
     "good_matches": 40,
+    "pos_skills": 40,
     "dealbreakers": 40,
 }
 
@@ -224,6 +226,15 @@ def effective_profile(profile=None):
     return result
 
 
+def profile_from_config(config):
+    """Flat profile (weights + lists) for a resolved per-scope config."""
+    result = {"version": PROFILE_VERSION}
+    for field in PROFILE_FIELDS:
+        value = config.get(field, DEFAULT_SCORING_CONFIG.get(field))
+        result[field] = list(value) if isinstance(value, list) else value
+    return result
+
+
 def weights_view(config=None, profile=None):
     """Everything the weights form needs to show and explain the scoring scale."""
     config = config or DEFAULT_SCORING_CONFIG
@@ -232,12 +243,8 @@ def weights_view(config=None, profile=None):
     for definition in WEIGHT_GROUPS:
         item = dict(definition)
         item["weight"] = int(config.get(definition["key"], DEFAULT_SCORING_CONFIG[definition["key"]]))
-        if definition["list_field"]:
-            item["keywords"] = list(config.get(definition["list_field"], []))
-            item["system"] = False
-        else:
-            item["keywords"] = ["pos"]
-            item["system"] = True
+        item["keywords"] = list(config.get(definition["list_field"], []))
+        item["system"] = False
         groups.append(item)
 
     return {
@@ -335,13 +342,10 @@ def score_job(job, config=None):
     ai_weight = config.get('ai_weight', 5)
     good_matches = config.get('good_matches', DEFAULT_SCORING_CONFIG['good_matches'])
     good_weight = config.get('good_weight', 5)
+    pos_skills = config.get('pos_skills', DEFAULT_SCORING_CONFIG['pos_skills'])
     pos_weight = config.get('pos_weight', 5)
     dealbreakers = config.get('dealbreakers', DEFAULT_SCORING_CONFIG['dealbreakers'])
     dealbreaker_weight = config.get('dealbreaker_weight', -30)
-
-    if re.search(r'\bpos\b', text):
-        score += pos_weight
-        matches_found.append("pos (system)")
 
     for word in core_skills:
         if _matches_skill(text, word):
@@ -356,6 +360,11 @@ def score_job(job, config=None):
     for word in good_matches:
         if _matches_skill(text, word):
             score += good_weight
+            matches_found.append(word)
+
+    for word in pos_skills:
+        if _matches_skill(text, word):
+            score += pos_weight
             matches_found.append(word)
 
     for word in dealbreakers:
@@ -404,12 +413,13 @@ def passes_filters(job, config=None, strictness="balanced", exclude_keywords=())
     return True
 
 
-def build_dashboard(remote_jobs=None, local_leads=None, config=None,
+def build_dashboard(remote_jobs=None, local_leads=None, config=None, configs=None,
                     exclude_keys=None, applied_count=0, dismissed_count=0):
     remote_jobs = remote_jobs or []
     local_leads = local_leads or []
     if config is None:
         config = DEFAULT_SCORING_CONFIG
+    configs = configs if isinstance(configs, dict) else {}
     exclude_keys = set(exclude_keys or ())
 
     all_jobs_data = []
@@ -421,7 +431,8 @@ def build_dashboard(remote_jobs=None, local_leads=None, config=None,
                       job.get('company', ''), job.get('location', ''))
         if key in exclude_keys:
             return
-        score, goods, bads = score_job(job, config)
+        job_config = configs.get(source) or config
+        score, goods, bads = score_job(job, job_config)
         all_jobs_data.append({
             "id": len(all_jobs_data),
             "key": key,

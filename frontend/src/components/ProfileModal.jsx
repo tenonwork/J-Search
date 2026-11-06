@@ -34,6 +34,7 @@ function initialWeights(proposal) {
     core_weight: Number(profile.core_weight ?? 8),
     ai_weight: Number(profile.ai_weight ?? 5),
     good_weight: Number(profile.good_weight ?? 5),
+    pos_weight: Number(profile.pos_weight ?? 5),
     dealbreaker_weight: Number(profile.dealbreaker_weight ?? -30),
   };
 }
@@ -90,7 +91,7 @@ function ChipGroup({ title, hint, items, selected, onToggle, tone = 'cyan' }) {
   );
 }
 
-export default function ProfileModal({ strictness, onClose }) {
+export default function ProfileModal({ strictness, defaultScope = 'global', onClose }) {
   const [step, setStep] = useState('input');
   const [cvText, setCvText] = useState('');
   const [preferences, setPreferences] = useState('');
@@ -115,9 +116,11 @@ export default function ProfileModal({ strictness, onClose }) {
     core_weight: 8,
     ai_weight: 5,
     good_weight: 5,
+    pos_weight: 5,
     dealbreaker_weight: -30,
   });
   const [mode, setMode] = useState('add');
+  const [scope, setScope] = useState(['global', 'local'].includes(defaultScope) ? defaultScope : 'global');
 
   useEffect(() => {
     let cancelled = false;
@@ -147,6 +150,7 @@ export default function ProfileModal({ strictness, onClose }) {
     profile.core_weight = Math.max(0, Math.min(100, Number(weights.core_weight) || 0));
     profile.ai_weight = Math.max(0, Math.min(100, Number(weights.ai_weight) || 0));
     profile.good_weight = Math.max(0, Math.min(100, Number(weights.good_weight) || 0));
+    profile.pos_weight = Math.max(0, Math.min(100, Number(weights.pos_weight) || 0));
     profile.dealbreaker_weight = Math.max(-100, Math.min(0, Number(weights.dealbreaker_weight) || 0));
     return {
       profile,
@@ -154,8 +158,9 @@ export default function ProfileModal({ strictness, onClose }) {
       exclude: selection.exclude,
       strictness,
       mode,
+      scope,
     };
-  }, [proposal, selection, weights, focusPreview, strictness, mode]);
+  }, [proposal, selection, weights, focusPreview, strictness, mode, scope]);
 
   useEffect(() => {
     if (step !== 'review' || !payload) return undefined;
@@ -227,6 +232,7 @@ export default function ProfileModal({ strictness, onClose }) {
         cv_text: cvText.trim(),
         preferences: preferences.trim(),
         strictness,
+        scope,
       });
       const nextProposal = data.proposal;
       setProposal(nextProposal);
@@ -458,11 +464,12 @@ export default function ProfileModal({ strictness, onClose }) {
         <>
           <ImpactPreview impact={impact} strictness={strictness} actionLabel="applying" />
 
-          <div className="mt-4 grid grid-cols-2 gap-2 rounded-xl border border-white/[0.06] bg-white/[0.015] p-3 sm:grid-cols-4">
+          <div className="mt-4 grid grid-cols-2 gap-2 rounded-xl border border-white/[0.06] bg-white/[0.015] p-3 sm:grid-cols-5">
             {[
               ['core_weight', 'Core'],
               ['ai_weight', 'AI'],
               ['good_weight', 'Match'],
+              ['pos_weight', 'POS'],
               ['dealbreaker_weight', 'Dealbreaker'],
             ].map(([key, label]) => (
               <label key={key} className="flex flex-col gap-1">
@@ -541,7 +548,20 @@ export default function ProfileModal({ strictness, onClose }) {
 
           <div className="mt-5 flex flex-wrap items-center gap-3 rounded-lg border border-white/[0.06] bg-white/[0.015] px-3.5 py-3">
             <ShieldAlert className="h-3.5 w-3.5 text-slate-600" />
-            <label className="text-[10px] font-medium text-slate-500" htmlFor="profile-mode">
+            <label className="text-[10px] font-medium text-slate-500" htmlFor="profile-scope">
+              Apply to
+            </label>
+            <select
+              id="profile-scope"
+              value={scope}
+              onChange={(event) => setScope(event.target.value)}
+              className="select-dark h-8 py-0 text-[10px]"
+            >
+              <option value="global">Global keywords</option>
+              <option value="local">Local keywords</option>
+              <option value="both">Both sets</option>
+            </select>
+            <label className="ml-2 text-[10px] font-medium text-slate-500" htmlFor="profile-mode">
               When applying
             </label>
             <select
@@ -554,6 +574,11 @@ export default function ProfileModal({ strictness, onClose }) {
               <option value="replace">Replace existing keywords</option>
             </select>
           </div>
+          <p className="mt-1.5 text-[9px] leading-relaxed text-slate-600">
+            {scope === 'both'
+              ? 'The proposal is written to both Global and Local; each set keeps its own visibility lists.'
+              : `The proposal is written to the ${scope} set only; the other set stays untouched.`}
+          </p>
 
           {reviewError && <p className="error-text">{reviewError}</p>}
         </>

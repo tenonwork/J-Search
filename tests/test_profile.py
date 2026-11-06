@@ -176,7 +176,7 @@ class WeightViewTests(unittest.TestCase):
         self.assertFalse(core['system'])
 
         pos = next(group for group in view['groups'] if group['key'] == 'pos_weight')
-        self.assertTrue(pos['system'])
+        self.assertFalse(pos['system'])
         self.assertEqual(pos['keywords'], ['pos'])
 
     def test_merge_changes_only_weights_and_keeps_lists(self):
@@ -202,17 +202,25 @@ class SettingsTests(unittest.TestCase):
             old_path = db.DB_PATH
             db.DB_PATH = Path(tmp) / 'test.db'
             try:
-                self.assertIsNone(db.get_scoring_profile())
-                self.assertTrue(db.save_scoring_profile({'core_skills': ['react']}))
-                self.assertEqual(db.get_scoring_profile(), {'core_skills': ['react']})
+                # A fresh database seeds the shared weights but no keyword lists.
+                profile = db.get_scoring_profile()
+                self.assertEqual(profile['core_weight'], 8)
+                self.assertNotIn('core_skills', profile)
 
-                db.add_keywords_bulk('focus', ['React', 'react', 'python'])
-                values = [k['value'] for k in db.get_keywords()['focus']]
-                self.assertEqual(values.count('react'), 1)
+                self.assertTrue(db.save_scoring_profile({'core_weight': 12}))
+                self.assertEqual(db.get_scoring_profile(), {'core_weight': 12})
+
+                db.add_keywords_bulk('focus', ['Zzz React', 'zzz react', 'python'])
+                values = [k['value'] for k in db.get_keywords('global')['focus']]
+                self.assertEqual(values.count('zzz react'), 1)
+
+                # The local set is independent.
+                local_values = [k['value'] for k in db.get_keywords('local')['focus']]
+                self.assertNotIn('zzz react', local_values)
 
                 self.assertTrue(db.replace_keywords('exclude', ['senior']))
                 self.assertEqual(
-                    [k['value'] for k in db.get_keywords()['exclude']],
+                    [k['value'] for k in db.get_keywords('global')['exclude']],
                     ['senior'],
                 )
 
@@ -220,6 +228,172 @@ class SettingsTests(unittest.TestCase):
                 self.assertIsNone(db.get_scoring_profile())
             finally:
                 db.DB_PATH = old_path
+
+
+class WorkspaceTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.old_path = db.DB_PATH
+        db.DB_PATH = Path(self.tempdir.name) / 'workspace.db'
+        db.init_db()
+
+    def tearDown(self):
+        db.DB_PATH = self.old_path
+        self.tempdir.cleanup()
+
+    def _rows(self, scope):
+        return {row['value']: row for row in db.get_keyword_rows(scope)}
+
+    def test_add_keyword_under_a_weight_in_one_scope(self):
+        self.assertTrue(db.add_keyword('focus', 'Zzz React', 'core_skills', 'local'))
+
+        local = self._rows('local')['zzz react']
+        self.assertEqual(local['weight_group'], 'core_skills')
+        self.assertEqual(local['type'], 'focus')
+        self.assertIn('zzz react', db.get_scoring_lists('local')['core_skills'])
+        self.assertNotIn('zzz react', db.get_scoring_lists('global')['core_skills'])
+
+    def test_pausing_stops_scoring_but_keeps_the_row(self):
+        db.save_workspace(
+            {'core_weight': 8},
+            {
+                'global': [
+                    {'value': 'rust', 'weight_group': 'core_skills', 'type': 'focus',
+                     'enabled': False},
+                ],
+                'local': [],
+            },
+        )
+        self.assertIn('rust', self._rows('global'))
+        self.assertNotIn('rust', db.get_scoring_lists('global')['core_skills'])
+        self.assertFalse(self._rows('global')['rust']['enabled'])
+
+    def test_save_workspace_replaces_both_scopes_atomically(self):
+        weights = {
+            'core_weight': 6,
+            'ai_weight': 2,
+            'good_weight': 1,
+            'pos_weight': 3,
+            'dealbreaker_weight': -20,
+        }
+        scopes = {
+            'global': [
+                {'value': 'react', 'weight_group': 'core_skills', 'type': 'focus'},
+                {'value': 'react', 'weight_group': 'ai_skills', 'type': 'score'},
+                {'value': 'senior', 'weight_group': 'dealbreakers', 'type': 'exclude'},
+                {'value': 'remote', 'weight_group': '', 'type': 'focus'},
+            ],
+            'local': [
+                {'value': 'till', 'weight_group': 'pos_skills', 'type': 'score'},
+            ],
+        }
+        self.assertTrue(db.save_workspace(weights, scopes))
+
+        global_rows = db.get_keyword_rows('global')
+        local_rows = db.get_keyword_rows('local')
+        self.assertEqual(len(global_rows), 3)
+        self.assertEqual(len(local_rows), 1)
+        self.assertEqual(db.get_keyword_rows('global')[0]['value'], 'react')
+        self.assertNotIn('till', self._rows('global'))
+        self.assertEqual(self._rows('local')['till']['weight_group'], 'pos_skills')
+        self.assertEqual(db.get_scoring_profile(), weights)
+
+    def test_save_workspace_rejects_a_payload_without_weights(self):
+        self.assertFalse(db.save_workspace({}, {'global': [], 'local': []}))
+        # The previous rows are untouched after a rejected save.
+        self.assertTrue(db.get_keyword_rows('global'))
+
+    def test_apply_profile_keywords_can_target_one_or_both_scopes(self):
+        self.assertTrue(db.apply_profile_keywords(
+            {'core_skills': ['haskell']},
+            ['haskell'],
+            ['cobol'],
+            mode='add',
+            scopes=['local'],
+        ))
+        self.assertIn('haskell', self._rows('local'))
+        self.assertNotIn('haskell', self._rows('global'))
+        self.assertIn('cobol', self._rows('local'))
+        self.assertNotIn('cobol', self._rows('global'))
+
+        self.assertTrue(db.apply_profile_keywords(
+            {'core_skills': ['elixir']},
+            ['elixir'],
+            [],
+            mode='add',
+            scopes=['global', 'local'],
+        ))
+        self.assertIn('elixir', self._rows('global'))
+        self.assertIn('elixir', self._rows('local'))
+
+    def test_apply_profile_replace_only_clears_the_target_scope(self):
+        db.add_keyword('focus', 'legacy-local', 'core_skills', 'local')
+        db.add_keyword('focus', 'legacy-global', 'core_skills', 'global')
+
+        self.assertTrue(db.apply_profile_keywords(
+            {'core_skills': ['zig']},
+            ['zig'],
+            [],
+            mode='replace',
+            scopes=['local'],
+        ))
+
+        self.assertNotIn('legacy-local', self._rows('local'))
+        self.assertIn('legacy-global', self._rows('global'))
+        self.assertIn('zig', self._rows('local'))
+
+
+class ScopedScoringTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.old_path = db.DB_PATH
+        db.DB_PATH = Path(self.tempdir.name) / 'scoped.db'
+        db.init_db()
+        import run
+        self.run = run
+        self.old_profile = run._scoring_profile
+        run._scoring_profile = db.get_scoring_profile()
+
+    def tearDown(self):
+        self.run._scoring_profile = self.old_profile
+        db.DB_PATH = self.old_path
+        self.tempdir.cleanup()
+
+    def test_pos_is_an_editable_weight_group(self):
+        self.assertTrue(db.add_keyword('focus', 'till', 'pos_skills', 'global'))
+
+        config = self.run._config_for('global')
+        self.assertIn('till', config['pos_skills'])
+        score, matches, flags = score_job(
+            {'title': 'Store assistant', 'desc': 'Work the till'}, config,
+        )
+        self.assertIn('till', matches)
+        self.assertEqual(score, config['pos_weight'])
+        self.assertFalse(flags)
+
+        db.set_keyword_states('focus', {'till': False}, 'global')
+        self.assertNotIn('till', self.run._config_for('global')['pos_skills'])
+
+    def test_each_scope_uses_its_own_keyword_lists(self):
+        self.assertTrue(db.save_workspace(
+            {'core_weight': 9},
+            {
+                'global': [],
+                'local': [
+                    {'value': 'zebra', 'weight_group': 'core_skills', 'type': 'score'},
+                ],
+            },
+        ))
+        self.run._scoring_profile = db.get_scoring_profile()
+
+        global_config = self.run._config_for('global')
+        local_config = self.run._config_for('local')
+        self.assertNotIn('zebra', global_config['core_skills'])
+        self.assertIn('zebra', local_config['core_skills'])
+
+        job = {'title': 'Zebra Engineer', 'desc': ''}
+        self.assertEqual(score_job(job, global_config)[0], 0)
+        self.assertEqual(score_job(job, local_config)[0], 9)
 
 
 if __name__ == '__main__':

@@ -2,7 +2,7 @@
 
 A local-first job hunting tool: it scrapes global remote feeds and East African job boards, scores every posting against a configurable keyword model, stores results in SQLite, and serves a dashboard where you filter and sort the results live — no re-scraping required.
 
-You can tune the scoring profile by hand, or import a CV (PDF, DOCX or pasted text) into the dashboard and let an optional local or hosted model propose the skills, highlight keywords, hide keywords and weights for you to review.
+You can tune keywords and the five shared weights in one workspace, with separate Global and Local sets, or import a CV (PDF, DOCX or pasted text) and let an optional local or hosted model propose the skills, highlight keywords, hide keywords and weights for you to review.
 
 Instead of deploying blind "spray-and-pray" auto-apply bots that trigger platform bans and flood applicant tracking systems with noise, this system acts as a data gatekeeper. It pulls a deliberately oversized bundle of listings, then lets you narrow it down at your own discretion.
 
@@ -55,17 +55,28 @@ Local listings are filtered by a tech-title regex before scoring, so HR, supply-
 
 ## Scoring Engine
 
-Weights live in `DEFAULT_SCORING_CONFIG` in `app/job_dashboard.py` and are no longer hardcoded into the matching loop. A saved profile in the `settings` table overrides the lists and weights; `DEFAULT_SCORING_CONFIG` remains the fallback. Profiles are normalised on read: values are lowercased, de-duplicated, length-capped and unknown keys are dropped.
+The `keywords` table is the source of truth for which terms score and which terms highlight or hide. There is one row per keyword per scope (`global` or `local`). Global jobs are scored with Global rows; Local jobs with Local rows. The five weights are shared and stored on the scoring profile in `settings`. `DEFAULT_SCORING_CONFIG` in `app/job_dashboard.py` is the fallback when a weight is missing or a fresh database is seeded. Profiles are normalised on read: values are lowercased, de-duplicated, length-capped and unknown keys are dropped. Saved profiles keep only the five weights; keyword lists are not stored there.
 
-Matching uses word boundaries for plain terms (`\bpostgres\b`), so `postgres` does not match *postgresql*, while terms that cannot be expressed with `\b` (`c++`, `c#`, `.net`, `node.js`) use literal matching. The dashboard's highlight/hide filter uses the same rules as the scorer.
+Each row has a `weight_group` (`core_skills`, `ai_skills`, `good_matches`, `pos_skills`, `dealbreakers`, or empty) and a `type`:
+
+* `focus` — highlight matching cards and, when the row has a weight group, add that group's points.
+* `exclude` — hide matching cards and, when the row has a weight group, add that group's points.
+* `score` — add points only. POS is seeded this way so `pos` scores without highlighting.
+* An empty `weight_group` is visibility only: highlight or hide, with no score change.
+
+Pausing a row stops both its score and its highlight/hide effect. New keywords in a positive group highlight; new dealbreakers hide.
+
+Matching uses word boundaries for plain terms (`\bpostgres\b`), so `postgres` does not match *postgresql*, while terms that cannot be expressed with `\b` (`c++`, `c#`, `.net`, `node.js`) use literal matching. The dashboard's highlight/hide filter uses the same rules as the scorer. `pos` is an ordinary `pos_skills` term, not a separate hard-coded rule, so it still will not match *position* or *repository*.
 
 | Group | Default weight | Default keywords |
 | :-- | :-- | :-- |
-| Core stack | +8 each | `postgresql`, `supabase`, `react native`, `electron`, `typescript`, `react`, `postgres`, `expo`, `fullstack`, `full-stack`, `backend` |
-| AI & infrastructure | +5 each | `mcp`, `model context protocol`, `llm`, `ai agent`, `claude`, `sqlite`, `data science`, `python` |
-| Location & level | +5 each | `nairobi`, `remote`, `hybrid`, `mid-level`, `mid level`, `contract`, `point of sale` |
-| Isolated `pos` | +5 | Word-boundary match only |
-| Dealbreakers | −30 each | `senior`, `lead`, `staff`, `architect`, `manager`, `10+ years`, `8+ years`, `phd`, `clearance required` |
+| Core skills (`core_skills`) | +8 each | `postgresql`, `supabase`, `react native`, `electron`, `typescript`, `react`, `postgres`, `expo`, `fullstack`, `full-stack`, `backend` |
+| AI & infrastructure (`ai_skills`) | +5 each | `mcp`, `model context protocol`, `llm`, `ai agent`, `claude`, `sqlite`, `data science`, `python` |
+| Good matches (`good_matches`) | +5 each | `nairobi`, `remote`, `hybrid`, `mid-level`, `mid level`, `contract`, `point of sale` |
+| POS systems (`pos_skills`) | +5 each | `pos` |
+| Dealbreakers (`dealbreakers`) | −30 each | `senior`, `lead`, `staff`, `architect`, `manager`, `10+ years`, `8+ years`, `phd`, `clearance required` |
+
+Older databases are migrated once, flagged by `keyword_workspace_version = 2`. Existing highlight and hide rows are copied into both scopes. A keyword that sat in more than one scoring list keeps the group with the largest absolute weight; ties follow Core → AI → Good → POS → Dealbreakers. That removes double-counting, so a few stored scores can shift. The migration is idempotent.
 
 ### Strictness presets
 
@@ -75,7 +86,7 @@ Matching uses word boundaries for plain terms (`\bpostgres\b`), so `postgres` do
 | Balanced | Hard drop | 5 | Penalty only | 0 |
 | Lenient | Penalty only | 0 | Penalty only | −10 |
 
-Presets are applied in the browser by the strictness toggle; the server scores every job once so the toggle is instant. Presets own the thresholds and whether dealbreakers are enforced, not the keyword lists or weights — those come from the saved profile.
+Presets are applied in the browser by the strictness toggle; the server scores every job once so the toggle is instant. Presets own the thresholds and whether dealbreakers are enforced, not the keyword lists or weights. Lists come from the keyword rows for that job's source; weights come from the shared profile.
 
 ### Engineering notes
 
@@ -87,9 +98,9 @@ Presets are applied in the browser by the strictness toggle; the server scores e
 
 The dashboard is a dark, responsive React interface built around the J-Search cyan/blue brand mark. It keeps the original scoring and API behaviour while adding score rings, glass panels, keyword chips, and a role-detail drawer.
 
-* **Two tabs:** Global and Local — each with its own result count.
-* **Keyword manager:** Highlight keywords (cyan glow on matching cards) and Hide keywords (remove matching cards), with add, autocomplete, pause/enable, and delete. The Manage modal has a `Save changes` button; unchecking a keyword pauses it without deleting it. Permanent deletion happens from the `x` on a tag and requires confirmation. Persisted in SQLite.
-* **Broad-fetch filtering:** Scrapers always fetch a wide set of postings. Keywords only change what the dashboard shows, not what is fetched or how jobs are scored.
+* **Two tabs:** Global and Local — each with its own result count, and each filtered with that scope's highlight and hide keywords.
+* **Keywords & weights:** One modal with Global and Local tabs. All five weight cards stay visible. Each chip can change behaviour (highlight, hide, or score only), pause, move to another weight, or be deleted. Keywords with no weight sit in a visibility-only section. One Save writes both scopes and the shared weights, then rescores and rebuilds the dashboard. Persisted in SQLite.
+* **Broad fetch:** Scrapers always fetch a wide set of postings. Keywords change scoring and what the dashboard shows; they do not change what is fetched.
 * **Strictness toggle:** Strict / Balanced / Lenient.
 * **Sort:** most recommended first, newest first, or lowest match first.
 * **Score rings:** emerald for 80+, cyan for 50–79, muted slate below 50.
@@ -108,7 +119,7 @@ The **Import from CV** button opens a review-gated profile builder:
 3. Contact details (email, phone, URLs, handles) are masked before the text is sent to the configured model. If the model is remote, the dashboard says so before analysis.
 4. The model returns only allow-listed skills with evidence snippets. Unknown, unevidenced or generic terms are dropped.
 5. The dashboard shows the proposed scoring profile, highlight keywords, hide keywords and an impact preview (`N visible now → M after applying`).
-6. No scoring or keyword changes are written until **Apply selected**. Applying saves the scoring profile and adds the selected keywords; existing keywords are not deleted.
+6. No scoring or keyword changes are written until **Apply selected**. The review step has an **Apply to** selector: Global, Local, or Both. It defaults to the dashboard tab you opened the import from. Applying saves the shared weights and writes the proposed lists plus the selected highlight and hide keywords into the chosen set or sets, then rescores. **Add** merges into those sets. **Replace** clears only the sets you selected.
 
 The CV is treated as untrusted data: it is delimited in the prompt, the model has no tools, and the output is validated against `app/skills_taxonomy.json`. The structured candidate profile is stored in `settings`; the raw CV and uploaded file are not persisted. Text-based PDFs are limited to the first 40 pages and 20,000 characters; scanned PDFs and legacy `.doc` files are rejected with a clear message.
 
@@ -193,17 +204,21 @@ If the endpoint is unreachable, the import fails with a provider-aware message. 
 | `/applied` | GET | Applied-jobs tracker page |
 | `/hidden` | GET | Dismissed-jobs tracker page |
 | `/api/jobs` | GET | Scored jobs as JSON, excluding applied/hidden postings |
-| `/api/keywords` | GET | Current highlight/hide keywords with enabled state |
-| `/api/keywords/add` | POST | `{"type": "focus"\|"exclude", "value": "..."}` |
-| `/api/keywords/state` | POST | `{"type": "...", "states": {"keyword": true\|false}}` — pause/enable without deleting |
-| `/api/keywords/delete` | POST | `{"type": "...", "values": ["..."]}` |
-| `/api/profile` | GET | Saved scoring profile, candidate profile, dismissal counts and model configuration |
+| `/api/keywords` | GET | Highlight and hide keywords for both scopes, each with enabled state and weight group. Top-level `focus` and `exclude` mirror Global |
+| `/api/keywords/add` | POST | `{"type": "focus"\|"exclude"\|"score", "value": "...", "scope": "global"\|"local", "weight_group": "core_skills"\|...}` |
+| `/api/keywords/state` | POST | `{"type": "...", "scope": "global"\|"local", "states": {"keyword": true\|false}}` — pause/enable without deleting |
+| `/api/keywords/delete` | POST | `{"type": "...", "scope": "global"\|"local", "values": ["..."]}` |
+| `/api/keyword-workspace` | GET | Shared weights, defaults, the five group definitions, and every keyword row for both scopes |
+| `/api/keyword-workspace` | POST | `{"weights": {...}, "scopes": {"global": [...], "local": [...]}}` — replace both keyword sets and merge weights in one write, then rescore and rebuild the dashboard. Requires at least one valid weight and both scope lists |
+| `/api/weights` | GET | Weights plus the enabled lists for one scope (`?scope=global` or `?scope=local`) |
+| `/api/weights` | POST | `{"weights": {...}}` — save shared weights only, then rescore. Keyword rows are left as they are |
+| `/api/profile` | GET | Saved weights, the effective config for each scope, candidate profile, dismissal counts and model configuration |
 | `/api/llm/test` | POST | Send a tiny, CV-free prompt to verify the configured endpoint, key and model |
 | `/api/profile/extract` | POST | Raw PDF/DOCX/TXT body (max 10 MB) — extracted text for review; nothing is stored |
-| `/api/profile/analyze` | POST | `{"cv_text": "...", "preferences": "..."}` — validated proposal plus impact preview; saves only the structured candidate profile |
-| `/api/profile/preview` | POST | `{"profile": {...}, "focus": [...], "exclude": [...]}` — impact preview without saving |
-| `/api/profile/apply` | POST | Same payload as preview; persists the profile and adds keywords. Optional `"mode": "replace"` replaces both keyword lists |
-| `/api/profile/reset` | POST | Delete the saved scoring profile and restore defaults |
+| `/api/profile/analyze` | POST | `{"cv_text": "...", "preferences": "...", "scope": "global"\|"local"\|"both"}` — validated proposal plus impact preview; saves only the structured candidate profile |
+| `/api/profile/preview` | POST | `{"profile": {...}, "focus": [...], "exclude": [...], "scope": "...", "mode": "add"\|"replace"}` — impact preview without saving |
+| `/api/profile/apply` | POST | Same payload as preview. Persists the shared weights and writes keywords into the selected scope or both. `"mode": "replace"` clears only those scopes |
+| `/api/profile/reset` | POST | Delete the saved scoring weights and restore default weights |
 | `/api/local-sites` | GET | Watched company career pages with enabled state |
 | `/api/local-sites/scan` | POST | `{"text": "..."}` — extract up to 3 URLs, resolve short links, preview tech roles; nothing is saved |
 | `/api/local-sites/apply` | POST | `{"token": "...", "watch": true, "jobs": ["url"]}` — import selected roles and optionally watch the resolved page |
@@ -219,12 +234,12 @@ If the endpoint is unreachable, the import fails with a provider-aware message. 
 
 | Table | Columns |
 | :-- | :-- |
-| `keywords` | `id`, `type` (`focus`/`exclude`), `value`, `enabled` (1 = active, 0 = paused) — unique per type |
-| `settings` | `key` (primary key), `value` (JSON), `updated_at` — scoring profile, candidate profile and watched local sources |
+| `keywords` | `id`, `scope` (`global`/`local`), `value`, `weight_group` (one of the five groups, or empty), `type` (`focus`/`exclude`/`score`), `enabled` (1 = active, 0 = paused) — unique on `(scope, value)` |
+| `settings` | `key` (primary key), `value` (JSON), `updated_at` — shared scoring weights, `keyword_workspace_version`, candidate profile and watched local sources |
 | `jobs` | `id`, `title`, `company`, `location`, `url` (unique), `description`, `source`, `score`, `matches`, `redflags`, `fetched_at` |
 | `decisions` | `job_key` (primary key), `status` (`applied`/`dismissed`), `reason`, `note`, `title`, `company`, `location`, `url`, `source`, `score`, `applied_at`, `created_at`, `updated_at` |
 
-Default keywords are seeded the first time the database is created. Older databases that used a single-column unique constraint on `keywords.value` are migrated automatically to the current `(type, value)` constraint; saved keywords and paused states are preserved.
+Default keywords are seeded the first time the database is created, once into each scope. Older databases are migrated automatically to the workspace schema: highlight and hide rows are copied into both scopes, scoring-list membership is collapsed to one weight per keyword, and the profile is reduced to the five weights. Paused states are preserved. The `keyword_workspace_version` setting is `2` after that migration.
 
 Decision snapshots (title, company, score, etc.) are stored alongside the key, so the tracker pages do not depend on the `jobs` row still existing.
 
@@ -332,7 +347,7 @@ python -m unittest discover -s tests -v
 * Short links are resolved and the final destination is shown before import. Local/private addresses, credentials in URLs and non-standard ports are rejected; only `http`/`https` pages are fetched.
 * Job identity is the normalised URL (host + path). A reposted job with a new slug/URL will reappear, the same role listed on two sources with different URLs is treated as two jobs, and boards that put the job ID only in query parameters can collide.
 * Decisions live in `data/jsearch.db`; deleting the database deletes the application history.
-* Keyword changes affect visibility only. The scoring profile (core skills, AI skills, weights, dealbreakers) is edited through the CV import review or the settings API, not by the keyword manager.
+* Saving the keyword workspace or applying a CV import rescores jobs and rebuilds the dashboard. Scrapers still ignore keywords; only the view and the score change.
 * CV import accepts text-based PDFs, DOCX, TXT and Markdown. Scanned/image-only PDFs and legacy `.doc` files are not supported; scanned CVs would need OCR. Two-column PDF layouts can scramble reading order, so review the extracted text before analysing. The candidate's name is not masked — only email, phone, URLs and handles are — so use a zero-retention, no-training provider (Cloudflare Workers AI) or a local model when the CV contains sensitive details.
 * CV extraction quality depends on the model. Small local models handle obvious stacks well but are weaker on nuance; hosted models vary. Every proposal is validated against the taxonomy and must be reviewed before it is applied.
 * `gpt-oss` models can return empty content when a provider enforces JSON mode. J-Search skips JSON mode for them and retries without it if another model returns an empty answer. Reasoning tokens count toward the output budget, so J-Search defaults `JSEARCH_LLM_REASONING_EFFORT` to `low` for `gpt-oss`. If the model still runs out of output tokens, increase `JSEARCH_LLM_MAX_TOKENS` or use a shorter CV.
@@ -342,7 +357,7 @@ python -m unittest discover -s tests -v
 
 - [ ] **Keyword-driven queries:** feed highlight keywords into DuckDuckGo/BrighterMonday search URLs so filters shape the scrape, not just the view.
 - [x] **Company career pages:** a user-managed Local watchlist with short-link resolution and review-gated imports.
-- [x] **Editable scoring profile:** core/AI skill weights and dealbreakers can be reviewed and edited during CV import, then saved to `settings`.
+- [x] **Editable scoring profile:** all five weights, including Good matches and POS, are edited in the keyword workspace or during CV import. Weights are shared; keyword lists are per scope.
 - [x] **PDF/DOCX CV parsing:** extract text from uploaded files instead of requiring paste.
 - [ ] **OCR for scanned CVs:** read image-only PDFs; keep this last because it adds a heavy dependency.
 - [ ] **Candidate profile editor:** show and edit the stored candidate profile without re-running the model.

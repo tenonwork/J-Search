@@ -23,6 +23,10 @@ export function enabledValues(filters, type) {
   return (filters[type] || []).filter((item) => item.enabled).map((item) => item.value);
 }
 
+export function keywordsForScope(keywords, scope) {
+  return keywords?.[scope] || { focus: [], exclude: [] };
+}
+
 export function isFocused(job, filters) {
   const text = `${job.title || ''} ${job.desc || ''}`.toLowerCase();
   return enabledValues(filters, 'focus').some((keyword) => skillMatches(text, keyword));
