@@ -2,6 +2,7 @@ requests>=2.31
 beautifulsoup4>=4.12
 feedparser>=6.0
 pypdf>=4.2
+python-docx>=1.1
 
 # Optional: only needed for legacy/local_directory_scraper.py
 # playwright>=1.40

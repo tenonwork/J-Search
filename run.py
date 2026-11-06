@@ -34,7 +34,7 @@ from app.job_dashboard import (
 from app.applied_page import build_decisions_page
 from app.env import load_dotenv
 from app.paths import DASHBOARD_PATH, DASHBOARD_STATIC_DIR
-from app import cv_import, cv_profile, db, llm_client
+from app import cv_import, cv_profile, db, export_results, llm_client
 
 # Load local model/provider configuration before reading the host settings.
 load_dotenv()
@@ -1129,6 +1129,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._handle_local_sites_state()
         elif path == '/api/local-sites/delete':
             self._handle_local_sites_delete()
+        elif path == '/api/export':
+            self._handle_export()
         elif path == '/api/discovery-queries':
             data = self._read_json()
             queries = data.get('queries')
@@ -1183,16 +1185,40 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except _CLIENT_DISCONNECT_ERRORS:
             return
 
-    def _respond(self, code, body, content_type='text/plain'):
+    def _respond(self, code, body, content_type='text/plain', extra_headers=None):
         try:
             self.send_response(code)
             self.send_header('Content-Type', content_type)
             self.send_header('Content-Length', len(body))
             self.send_header('Cache-Control', 'no-store, max-age=0')
+            for key, value in (extra_headers or {}).items():
+                self.send_header(key, value)
             self.end_headers()
             self.wfile.write(body)
         except _CLIENT_DISCONNECT_ERRORS:
             return
+
+    def _handle_export(self):
+        """Download the roles the dashboard is currently showing."""
+        body, error = self._read_raw_body(25 * 1024 * 1024)
+        if error == 'too_large':
+            self._respond_json(413, {'error': 'That export is too large.'})
+            return
+        if error:
+            self._respond_json(400, {'error': 'Could not read the export request.'})
+            return
+        try:
+            payload = json.loads(body.decode('utf-8'))
+            filename, content_type, data = export_results.build_export(payload)
+        except export_results.ExportError as exc:
+            self._respond_json(400, {'error': str(exc)})
+            return
+        except Exception:
+            self._respond_json(500, {'error': 'Could not build that export.'})
+            return
+        self._respond(200, data, content_type, {
+            'Content-Disposition': f'attachment; filename="{filename}"',
+        })
 
     def log_message(self, fmt, *args):
         pass

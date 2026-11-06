@@ -103,6 +103,7 @@ The dashboard is a dark, responsive React interface built around the J-Search cy
 * **Broad fetch:** Scrapers always fetch a wide set of postings. Keywords change scoring and what the dashboard shows; they do not change what is fetched.
 * **Strictness toggle:** Strict / Balanced / Lenient.
 * **Sort:** most recommended first, newest first, or lowest match first.
+* **Export:** **Export JSON** and **Export Word** download every role in the current tab and filters, not just the page on screen. Each file includes the description, matched signals, red flags, and the highlight keywords that fit that posting.
 * **Score rings:** emerald for 80+, cyan for 50–79, muted slate below 50.
 * **Run controls:** Run All, Run Global Only, and Run Local Only, with live Applied/Hidden tallies in the header.
 * **Job detail drawer:** Review Entry opens a slide-over with the full description, matched signals, red flags, score, and quick apply link.
@@ -204,6 +205,7 @@ If the endpoint is unreachable, the import fails with a provider-aware message. 
 | `/applied` | GET | Applied-jobs tracker page |
 | `/hidden` | GET | Dismissed-jobs tracker page |
 | `/api/jobs` | GET | Scored jobs as JSON, excluding applied/hidden postings |
+| `/api/export` | POST | `{"format": "json"\|"docx", "scope": "global"\|"local", "strictness": "...", "sort": "...", "highlight_keywords": [...], "jobs": [...]}` — download the roles currently shown, with descriptions, matches, red flags and fitting highlight keywords |
 | `/api/keywords` | GET | Highlight and hide keywords for both scopes, each with enabled state and weight group. Top-level `focus` and `exclude` mirror Global |
 | `/api/keywords/add` | POST | `{"type": "focus"\|"exclude"\|"score", "value": "...", "scope": "global"\|"local", "weight_group": "core_skills"\|...}` |
 | `/api/keywords/state` | POST | `{"type": "...", "scope": "global"\|"local", "states": {"keyword": true\|false}}` — pause/enable without deleting |
@@ -283,6 +285,7 @@ Node.js 18 or newer is required. The build writes fixed-name assets (`app.js`, `
 │   ├── env.py                       # Dependency-free .env loader
 │   ├── db.py                        # SQLite layer (keywords, jobs, decisions, settings)
 │   ├── job_dashboard.py             # Scoring engine, presets, React shell + bootstrap
+│   ├── export_results.py            # JSON and Word downloads of the visible results
 │   ├── cv_profile.py                # CV scrubbing, validation, profile proposal
 │   ├── cv_import.py                 # Local PDF/DOCX/TXT text extraction for uploads
 │   ├── llm_client.py                # OpenAI-compatible chat client

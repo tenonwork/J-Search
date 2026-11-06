@@ -27,9 +27,13 @@ export function keywordsForScope(keywords, scope) {
   return keywords?.[scope] || { focus: [], exclude: [] };
 }
 
-export function isFocused(job, filters) {
+export function matchingHighlights(job, filters) {
   const text = `${job.title || ''} ${job.desc || ''}`.toLowerCase();
-  return enabledValues(filters, 'focus').some((keyword) => skillMatches(text, keyword));
+  return enabledValues(filters, 'focus').filter((keyword) => skillMatches(text, keyword));
+}
+
+export function isFocused(job, filters) {
+  return matchingHighlights(job, filters).length > 0;
 }
 
 export function passesFilters(job, filters, strictness) {

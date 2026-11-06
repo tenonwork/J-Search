@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowUpRight, Layers3, Sparkles } from 'lucide-react';
+import { ArrowUpRight, Download, Layers3, Sparkles } from 'lucide-react';
 import Header from './components/Header';
 import PreferencesPanel from './components/PreferencesPanel';
 import FilterBar from './components/FilterBar';
@@ -13,7 +13,14 @@ import ProfileModal from './components/ProfileModal';
 import Pagination from './components/Pagination';
 import Toast from './components/Toast';
 import { api } from './lib/api';
-import { isFocused, keywordsForScope, passesFilters, sortJobs } from './lib/utils';
+import {
+  enabledValues,
+  isFocused,
+  keywordsForScope,
+  matchingHighlights,
+  passesFilters,
+  sortJobs,
+} from './lib/utils';
 import { paginate } from './lib/pagination';
 
 export default function App({ bootstrap }) {
@@ -33,6 +40,7 @@ export default function App({ bootstrap }) {
   const [localOpen, setLocalOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [page, setPage] = useState(1);
+  const [exporting, setExporting] = useState(null);
   const [toast, setToast] = useState(null);
   const feedRef = useRef(null);
 
@@ -162,6 +170,61 @@ export default function App({ bootstrap }) {
     if (page > pageData.totalPages) setPage(pageData.totalPages);
   }, [page, pageData.totalPages]);
 
+  const exportResults = async (format) => {
+    if (!visibleJobs.length || exporting) return;
+    setExporting(format);
+    try {
+      const response = await fetch('/api/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          format,
+          scope: tab,
+          strictness,
+          sort: sortOrder,
+          highlight_keywords: enabledValues(activeFilters, 'focus'),
+          jobs: visibleJobs.map((job) => ({
+            title: job.title,
+            company: job.company,
+            location: job.location,
+            url: job.url,
+            source: job.source,
+            score: job.score,
+            description: job.desc,
+            matches: job.matches || [],
+            red_flags: job.redFlags || [],
+            highlights: matchingHighlights(job, activeFilters),
+          })),
+        }),
+      });
+      if (!response.ok) {
+        let message = 'Could not export these results.';
+        const isJson = (response.headers.get('content-type') || '').includes('json');
+        if (isJson) {
+          const data = await response.json();
+          message = data.error || message;
+        }
+        throw new Error(message);
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get('Content-Disposition') || '';
+      const named = disposition.match(/filename="([^"]+)"/);
+      const filename = named?.[1] || `jsearch-export.${format === 'docx' ? 'docx' : 'json'}`;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      notify(error.message || 'Could not export these results.');
+    } finally {
+      setExporting(null);
+    }
+  };
+
   const goToPage = (next) => {
     const target = Math.min(Math.max(1, Number(next) || 1), pageData.totalPages);
     if (target === pageData.page) return;
@@ -222,7 +285,25 @@ export default function App({ bootstrap }) {
                 {tab === 'global' ? 'Global Results' : 'Local Results'}
               </h2>
             </div>
-            <div className="flex items-center gap-2 text-[10px] text-slate-500">
+            <div className="flex flex-wrap items-center gap-2 text-[10px] text-slate-500">
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => exportResults('json')}
+                disabled={!visibleJobs.length || Boolean(exporting)}
+              >
+                <Download className="h-3.5 w-3.5" />
+                {exporting === 'json' ? 'Exporting…' : 'Export JSON'}
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => exportResults('docx')}
+                disabled={!visibleJobs.length || Boolean(exporting)}
+              >
+                <Download className="h-3.5 w-3.5" />
+                {exporting === 'docx' ? 'Exporting…' : 'Export Word'}
+              </button>
               <Sparkles className="h-3 w-3 text-cyan-300/50" />
               <span className="tabular-nums">{visibleJobs.length}</span>
               result{visibleJobs.length === 1 ? '' : 's'}
