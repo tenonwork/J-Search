@@ -44,6 +44,8 @@ The pipeline is split into five decoupled layers:
 | Global | Working Nomads | Public JSON API | Most reliable source in practice |
 | Global | Remotive | Public JSON API | Occasionally times out |
 | Global | Jobicy | Public JSON API | Occasionally times out |
+| Global | Himalayas | Public JSON API | Recent worldwide roles, full descriptions. Apply links stay on Himalayas |
+| Global | Remote OK | Public JSON API | Newest listings, full descriptions |
 | Global | We Work Remotely, Jobspresso, EU Remote | RSS feeds | Fragile; treated as bonus sources. Short RSS summaries are marked as teasers and scored from the title only. EU Remote blog posts are dropped |
 | Local | BrighterMonday | HTML scraping | Software/Data, IT and Engineering categories |
 | Local | JobsInKenya | HTML scraping | Filtered to tech-relevant titles |

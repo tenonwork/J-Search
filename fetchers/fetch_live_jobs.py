@@ -61,6 +61,81 @@ def _fetch_remotive():
         return []
 
 
+def _himalayas_job(job):
+    """One Himalayas API job, using the apply link the API requires."""
+    restrictions = job.get('locationRestrictions') or []
+    places = [
+        item.get('name') for item in restrictions
+        if isinstance(item, dict) and item.get('name')
+    ]
+    description = _strip_html(job.get('description') or job.get('excerpt') or '')
+    return {
+        "title": job.get("title") or "Untitled Role",
+        "company": job.get("companyName") or "Unknown Company",
+        "location": "Remote (" + (", ".join(places) or "Worldwide") + ")",
+        "url": job.get("applicationLink") or job.get("guid") or "#",
+        "desc": description,
+    }
+
+
+def _fetch_himalayas():
+    """Himalayas search API: recent worldwide roles with full descriptions.
+
+    Five pages is enough to change the pool without walking the whole board.
+    """
+    url = "https://himalayas.app/jobs/api/search"
+    jobs = []
+    try:
+        for page in range(1, 6):
+            response = requests.get(url, headers=HEADERS, params={
+                "worldwide": "true",
+                "sort": "recent",
+                "page": page,
+            }, timeout=20)
+            if response.status_code != 200:
+                break
+            batch = response.json().get('jobs') or []
+            jobs.extend(_himalayas_job(job) for job in batch)
+            if len(batch) < 20:
+                break
+        return jobs
+    except Exception as e:
+        print("  [Global][Himalayas] Failed: " + str(e))
+        return jobs
+
+
+def _remoteok_jobs(payload):
+    """Remote OK's first JSON item is a legal banner, not a job."""
+    jobs = []
+    for job in payload or []:
+        if not isinstance(job, dict) or not job.get('position'):
+            continue
+        tags = job.get('tags') or []
+        if not isinstance(tags, list):
+            tags = []
+        jobs.append({
+            "title": job.get("position") or "Untitled Role",
+            "company": job.get("company") or "Unknown Company",
+            "location": "Remote (" + str(job.get("location") or "Worldwide") + ")",
+            "url": job.get("url") or job.get("apply_url") or "#",
+            "desc": _strip_html(job.get("description") or "") + " " + " ".join(str(tag) for tag in tags),
+        })
+    return jobs
+
+
+def _fetch_remoteok():
+    """Remote OK public JSON. Descriptions are the full posting."""
+    url = "https://remoteok.com/api"
+    try:
+        response = requests.get(url, headers=HEADERS, timeout=25)
+        if response.status_code != 200:
+            return []
+        return _remoteok_jobs(response.json())
+    except Exception as e:
+        print("  [Global][RemoteOK] Failed: " + str(e))
+        return []
+
+
 def _fetch_jobicy():
     """Jobicy API."""
     url = "https://jobicy.com/api/v2/remote-jobs?count=50"
@@ -94,6 +169,8 @@ def get_live_remote_jobs():
         ("WorkingNomads", _fetch_workingnomads),
         ("Remotive", _fetch_remotive),
         ("Jobicy", _fetch_jobicy),
+        ("Himalayas", _fetch_himalayas),
+        ("RemoteOK", _fetch_remoteok),
     ]
 
     all_jobs = []

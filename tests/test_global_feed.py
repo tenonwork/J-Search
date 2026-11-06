@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 
-from app.job_dashboard import _is_blocked, score_job
+from app.job_dashboard import _is_blocked, _matches_skill, score_job
 from fetchers.fetch_rss_jobs import is_global_noise, without_global_noise
 import fetchers.fetch_live_jobs as live_jobs
 
@@ -10,6 +10,54 @@ class GlobalFeedFilterTests(unittest.TestCase):
     def test_arbeitnow_is_not_fetched(self):
         source = Path(live_jobs.__file__).read_text(encoding='utf-8').lower()
         self.assertNotIn('arbeitnow', source)
+        names = [name for name, _fn in [
+            ("WorkingNomads", live_jobs._fetch_workingnomads),
+            ("Remotive", live_jobs._fetch_remotive),
+            ("Jobicy", live_jobs._fetch_jobicy),
+            ("Himalayas", live_jobs._fetch_himalayas),
+            ("RemoteOK", live_jobs._fetch_remoteok),
+        ]]
+        self.assertIn('Himalayas', names)
+        self.assertIn('RemoteOK', names)
+
+    def test_clearance_wording_matches_without_catching_internal(self):
+        citizenship = "this role requires u.s. citizenship and an active ts/sci clearance."
+        self.assertTrue(_matches_skill(citizenship, "u.s. citizen"))
+        self.assertTrue(_matches_skill(citizenship, "u.s. citizenship"))
+        self.assertTrue(_matches_skill(citizenship, "ts/sci"))
+        self.assertTrue(_matches_skill("requires us citizenship", "us citizenship"))
+        self.assertTrue(_matches_skill("an active clearance is required", "active clearance"))
+        self.assertTrue(_matches_skill("secret clearance required", "secret clearance"))
+        self.assertTrue(_matches_skill("department of defense (dod) work", "dod"))
+        self.assertTrue(_matches_skill("people ops intern", "people ops"))
+        self.assertTrue(_matches_skill("people ops intern", "intern"))
+        self.assertFalse(_matches_skill("an internal tools role", "intern"))
+
+    def test_new_boards_keep_full_descriptions(self):
+        himalayas = live_jobs._himalayas_job({
+            "title": "Software Engineer",
+            "companyName": "Focused",
+            "description": "<p>Build the product.</p>",
+            "applicationLink": "https://himalayas.app/companies/focused/jobs/software-engineer",
+            "locationRestrictions": [],
+        })
+        self.assertEqual(himalayas["company"], "Focused")
+        self.assertEqual(himalayas["desc"], "Build the product.")
+        self.assertIn("himalayas.app", himalayas["url"])
+        remoteok = live_jobs._remoteok_jobs([
+            {"legal": "banner"},
+            {
+                "position": "Software Engineer",
+                "company": "Focused",
+                "location": "Worldwide",
+                "url": "https://remoteOK.com/remote-jobs/example",
+                "description": "<p>Ships React.</p>",
+                "tags": ["react"],
+            },
+        ])
+        self.assertEqual(len(remoteok), 1)
+        self.assertIn("Ships React.", remoteok[0]["desc"])
+        self.assertIn("react", remoteok[0]["desc"])
 
     def test_remotive_job_urls_are_not_blocked(self):
         self.assertFalse(_is_blocked('https://remotive.com/remote-jobs/software-engineer-123'))
